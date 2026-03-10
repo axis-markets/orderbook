@@ -1,8 +1,9 @@
+use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
+use crate::events::emit_trade;
 use crate::order::{load_order, remove_order, update_order, Order};
 use crate::settings::PRECISION;
 use crate::trade;
-use crate::trade::Trade;
 use soroban_sdk::{Address, Env, Vec};
 
 pub fn invert_price(e: &Env, price: i128) -> i128 {
@@ -15,19 +16,19 @@ pub fn invert_price(e: &Env, price: i128) -> i128 {
 
 pub fn execute_orders(
     e: &Env,
-    trader: &Address,
+    taker: &Address,
     amount: i128,
     selling: &Address,
     buying: &Address,
     max_price: i128,
     orders: Vec<u64>,
-) -> (Vec<Trade>, i128, i128) {
+    dispatcher: &mut Dispatcher,
+) -> (i128, i128) {
     let max_exec_price = invert_price(&e, max_price);
     let now = e.ledger().timestamp();
     let mut total_bought = 0i128;
     let mut total_sold = 0i128;
     let mut amount_left = amount;
-    let mut trades: Vec<Trade> = Vec::new(&e);
 
     for maker_order_id in orders.iter() {
         //load order from storage
@@ -76,17 +77,59 @@ pub fn execute_orders(
             e.panic_with_error(OrderbookError::Overflow);
         }
         //create trade descriptor
-        let trade = trade_with_order(&e, order, trader.clone(), bought, sold);
-        trades.push_back(trade);
+        trade_with_order(&e, order, taker.clone(), bought, sold, dispatcher);
         //stop iterating if fully executed
         if amount_left == 0 {
             break;
         }
     }
-    (trades, total_sold, total_bought)
+    if total_sold < 0
+        || total_bought < 0
+        || (total_sold == 0 && total_bought != 0)
+        || (total_sold != 0 && total_bought == 0)
+    {
+        e.panic_with_error(OrderbookError::InvalidMatch);
+    }
+    (total_sold, total_bought)
 }
 
-pub fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
+pub fn cross_orders(
+    e: &Env,
+    trader: &Address,
+    taker_order_id: u64,
+    orders: Vec<u64>,
+    dispatcher: &mut Dispatcher,
+) -> (i128, i128) {
+    //load from orderbook
+    let fetched_taker_order = load_order(&e, &taker_order_id);
+    if fetched_taker_order.is_none() {
+        e.panic_with_error(OrderbookError::OrderNotFound);
+    }
+    let mut taker_order = fetched_taker_order.unwrap();
+    //try to fill the order
+    let (sold, bought) = execute_orders(
+        &e,
+        &trader,
+        taker_order.amount,
+        &taker_order.selling,
+        &taker_order.buying,
+        taker_order.price,
+        orders,
+        dispatcher,
+    );
+    //if the trade was successful
+    if sold > 0 {
+        //update taker order amount
+        apply_order_trade(&e, &mut taker_order, sold);
+        //emit event
+        trade_with_order(&e, taker_order, trader.clone(), sold, bought, dispatcher);
+    }
+
+    //return actual sold/bought amounts
+    (sold, bought)
+}
+
+fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
     if bought_from_order == order.amount {
         //executed in full - remove from orderbook
         remove_order(e, &order);
@@ -102,21 +145,26 @@ pub fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
     update_order(e, &order);
 }
 
-pub fn trade_with_order(
+fn trade_with_order(
     e: &Env,
     order: Order,
-    trader: Address,
+    taker: Address,
     bought_from_order: i128,
     sold_to_order: i128,
-) -> Trade {
-    Trade {
+    dispatcher: &mut Dispatcher,
+) {
+    let maker = order.owner;
+    //add amounts to settle
+    dispatcher.add(&taker, &maker, &order.selling, sold_to_order);
+    dispatcher.add(&maker, &taker, &order.buying, bought_from_order);
+    //prepare and emit trade event
+    let trade = trade::Trade {
         id: trade::next_trade_id(e),
         order: order.id,
-        taker: trader,
-        maker: order.owner,
-        selling: order.buying,
-        buying: order.selling,
+        taker,
+        maker,
         sold: sold_to_order,
         bought: bought_from_order,
-    }
+    };
+    emit_trade(&e, order.buying, order.selling, trade);
 }

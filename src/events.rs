@@ -1,27 +1,61 @@
 use crate::order::Order;
 use crate::trade::Trade;
-use soroban_sdk::{symbol_short, Env, Symbol};
+use soroban_sdk::{contractevent, Address, Env, Symbol};
 
-const SELF: Symbol = symbol_short!("orderbook");
+/*pub struct TradeInfo {
+    //unique trade id
+    pub id: u64,
+    //order id
+    pub order: u64,
+    //trader account address
+    pub taker: Address,
+    //seller account address
+    pub maker: Address,
+    //sold tokens amount
+    pub sold: i128,
+    //bought tokens amount
+    pub bought: i128,
+}*/
 
-//TODO: use #[contractevent] macro: https://docs.rs/soroban-sdk/23.0.2/soroban_sdk/attr.contractevent.html
-pub fn emit_trade(e: &Env, trade: Trade) {
-    e.events().publish(
-        (
-            //TODO: consider adding taker and owner addresses
-            SELF,
-            symbol_short!("trade"),
-            trade.selling.clone(),
-            trade.buying.clone(),
-        ),
-        trade,
-    );
+#[contractevent(topics = ["AXIS", "trade"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TradeEvent {
+    #[topic]
+    pub selling: Address,
+    #[topic]
+    //TODO: consider adding taker and owner addresses
+    pub buying: Address,
+    pub trade: Trade,
 }
 
-pub fn emit_order_event(e: &Env, event: Symbol, order: Order) {
-    e.events().publish(
-        //TODO: consider adding kind and owner
-        (SELF, event, order.selling.clone(), order.buying.clone()),
+#[contractevent(topics = ["AXIS", "order"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderEvent {
+    #[topic]
+    pub action: Symbol,
+    #[topic]
+    pub selling: Address,
+    #[topic]
+    //TODO: consider adding taker and owner addresses
+    pub buying: Address,
+    pub order: Order,
+}
+
+pub fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trade) {
+    TradeEvent {
+        selling,
+        buying,
+        trade,
+    }
+    .publish(e);
+}
+
+pub fn emit_order_event(e: &Env, action: Symbol, order: Order) {
+    OrderEvent {
+        action,
+        selling: order.selling.clone(),
+        buying: order.buying.clone(),
         order,
-    );
+    }
+    .publish(e); //TODO: consider adding kind and owner
 }

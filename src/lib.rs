@@ -6,38 +6,21 @@ mod orderbook;
 mod settings;
 mod tests;
 mod trade;
+mod dispatcher;
 
 use crate::errors::OrderbookError;
-use crate::events::emit_trade;
-use crate::settings::{bump_instance, get_settings, update_settings, Settings, PRECISION};
+use crate::settings::{bump_instance, PRECISION};
 use order::{Order, OrderType};
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
+use crate::dispatcher::Dispatcher;
 
 #[contract]
 pub struct SorobanOrderbook;
 
 #[contractimpl]
 impl SorobanOrderbook {
-    /// Configure contract settings
-    ///
-    /// # Arguments
-    ///
-    /// * `admin` - Admin account address
-    /// * `fee` - Trade fee paid by the taker (in ‰)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the contract is already initialized
-    pub fn configure(e: Env, admin: Address, fee: u32) {
-        admin.require_auth();
-        let existing = get_settings(&e);
-        if existing.is_some() {
-            //require auth from the previous admin if settings have been already initialized
-            existing.unwrap().admin.require_auth(); //e.panic_with_error(OrderbookError::NotAuthorized);
-        }
-        let settings = Settings { admin, fee };
-        update_settings(&e, &settings);
-    }
+    /// Create new contract
+    pub fn __constructor(e: Env) {}
 
     /// Get lat order id
     ///
@@ -96,7 +79,7 @@ impl SorobanOrderbook {
         orders: Vec<u64>,
     ) -> (i128, i128, u64) {
         trader.require_auth();
-        bump_instance(&e, 1);
+        bump_instance(&e);
         // TODO: check deposit min amount
         //let deposit: i128 = amount * max_price / PRECISION;
         let mut order_amount = amount;
@@ -155,7 +138,7 @@ impl SorobanOrderbook {
     /// If trader is not the owner of the order
     pub fn cancel(e: Env, id: u64, trader: Address) {
         trader.require_auth();
-        bump_instance(&e, 1);
+        bump_instance(&e);
         //fetch order from the book
         let order = order::load_order(&e, &id);
         //only if it still exists
@@ -207,18 +190,18 @@ impl SorobanOrderbook {
         orders: Vec<u64>,
     ) -> (i128, i128) {
         trader.require_auth();
-        bump_instance(&e, 1);
+        bump_instance(&e);
         //check amount
         if amount <= 0 {
             e.panic_with_error(OrderbookError::InsufficientBalance)
         }
         //let max_exec_price = invert_price(&e, max_price);
-        let this = e.current_contract_address();
+        let mut dispatcher = Dispatcher::new(&e);
         //trade
-        let (trades, total_sold, total_bought) =
-            orderbook::execute_orders(&e, &trader, amount, &selling, &buying, max_price, orders);
-
-        //init token clients
+        let (total_sold, total_bought) =
+            orderbook::execute_orders(&e, &trader, amount, &selling, &buying, max_price, orders, &mut dispatcher);
+        dispatcher.settle();
+        /*//init token clients
         let selling_client = token::Client::new(&e, &selling);
         let buying_client = token::Client::new(&e, &buying);
 
@@ -226,13 +209,11 @@ impl SorobanOrderbook {
         selling_client.transfer(&trader, &this, &total_sold);
         for trade in trades.iter() {
             //transfer funds from contract to maker
+            //TODO: group by taker/maker pair
             selling_client.transfer(&this, &trade.maker, &trade.sold);
-            //emit event
-            emit_trade(&e, trade);
         }
         //transfer bought tokens to trader
-        buying_client.transfer(&this, &trader, &total_bought);
-        //TODO: consider using try_transfer() instead of transfer() to handle insufficient funds/non-authorized cases
+        buying_client.transfer(&this, &trader, &total_bought);*/
         //return fill result
         (total_sold, total_bought)
     }
@@ -260,33 +241,10 @@ impl SorobanOrderbook {
         taker_order_id: u64,
         orders: Vec<u64>,
     ) -> (i128, i128) {
-        /*//taker order should always be newer than maker orders - not sure about this
-        if orders.iter().any(|order_id| order_id > taker_order_id) {
-            e.panic_with_error(OrderbookError::InvalidMatch);
-        }*/
-        //load from orderbook
-        let fetched_taker_order = order::load_order(&e, &taker_order_id);
-        if fetched_taker_order.is_none() {
-            e.panic_with_error(OrderbookError::OrderNotFound);
-        }
-        let mut taker_order = fetched_taker_order.unwrap();
-        //try to fill the order
-        let (sold, bought) = SorobanOrderbook::fill(
-            e.clone(),
-            trader.clone(),
-            taker_order.amount,
-            taker_order.selling.clone(),
-            taker_order.buying.clone(),
-            taker_order.price,
-            orders,
-        );
-        //TODO: trader should receive all funds saved from matching existing orders and removing inefficiency
-        //update taker order amount
-        orderbook::apply_order_trade(&e, &mut taker_order, sold);
-        //emit event
-        let trade = orderbook::trade_with_order(&e, taker_order, trader, sold, bought);
-        emit_trade(&e, trade);
-        //return actual sold/bought amounts
+        //TODO: trader should receive all profits saved from matching existing orders and removing inefficiency
+        let mut dispatcher = Dispatcher::new(&e);
+        let (sold, bought) = orderbook::cross_orders(&e, &trader, taker_order_id, orders, &mut dispatcher);
+        dispatcher.settle();
         (sold, bought)
     }
 }

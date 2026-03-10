@@ -8,8 +8,6 @@ fn test_order_retrieval() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
     usd_client.mint(&trader, &1000000);
@@ -36,8 +34,6 @@ fn test_last_after_order_creation() {
     let (e, admin, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
-
-    client.configure(&admin, &0);
 
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
@@ -67,8 +63,6 @@ fn test_order_not_found() {
     let (e, admin, _, _, _, _) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
-
-    client.configure(&admin, &0);
 
     // Try to fetch non-existent order
     assert_eq!(client.order(&999), None);

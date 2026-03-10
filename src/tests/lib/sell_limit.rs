@@ -9,8 +9,6 @@ fn test_sell_limit_creates_order() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
     usd_client.mint(&trader, &10000);
@@ -49,8 +47,6 @@ fn test_sell_limit_insufficient_balance() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     // Don't mint enough tokens
     let usd_client = StellarAssetClient::new(&e, &usd);
     usd_client.mint(&trader, &100);
@@ -74,7 +70,6 @@ fn test_sell_limit_requires_auth() {
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
     e.mock_all_auths(); // Mock only for configure
-    client.configure(&admin, &0);
 
     // This should panic because trader auth is not provided
     client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));

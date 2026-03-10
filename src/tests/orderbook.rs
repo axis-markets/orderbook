@@ -57,7 +57,6 @@ fn test_fill(
     let contract_address = e.register(SorobanOrderbook, ());
     let orderbook_client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    orderbook_client.configure(&admin, &0);
     let (_, _, order_id) = orderbook_client.sell_limit(
         &maker,
         &x_order_amount,

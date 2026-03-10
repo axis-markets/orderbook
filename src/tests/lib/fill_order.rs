@@ -9,8 +9,6 @@ fn test_fill_order_empty_orders_list() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     let arbitrageur = Address::generate(&e);
     let usd_client = StellarAssetClient::new(&e, &usd);
 
@@ -40,8 +38,6 @@ fn test_fill_order_taker_not_found() {
     let (e, admin, trader, _issuer, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
-
-    client.configure(&admin, &0);
 
     let maker = Address::generate(&e);
     let eur_client = StellarAssetClient::new(&e, &eur);

@@ -1,3 +1,4 @@
+use core::ops::Add;
 use soroban_sdk::{contracttype, Address, Env};
 
 const LAST_TRADE_ID: &str = "lt";
@@ -13,10 +14,6 @@ pub struct Trade {
     pub taker: Address,
     //seller account address
     pub maker: Address,
-    //selling token
-    pub selling: Address,
-    //buying token
-    pub buying: Address,
     //sold tokens amount
     pub sold: i128,
     //bought tokens amount

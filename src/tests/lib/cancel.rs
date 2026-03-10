@@ -9,8 +9,6 @@ fn test_cancel_success() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
     usd_client.mint(&trader, &10000);
@@ -54,8 +52,6 @@ fn test_cancel_non_existent_order() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     // Try to cancel non-existent order - should not panic, just do nothing
     client.cancel(&999, &trader);
 }
@@ -65,8 +61,6 @@ fn test_cancel_multiple_orders() {
     let (e, admin, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
-
-    client.configure(&admin, &0);
 
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
@@ -106,8 +100,6 @@ fn test_cancel_after_partial_fill() {
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
-    client.configure(&admin, &0);
-
     let taker = Address::generate(&e);
     let usd_client = StellarAssetClient::new(&e, &usd);
     let eur_client = StellarAssetClient::new(&e, &eur);
@@ -141,8 +133,6 @@ fn test_cancel_wrong_owner() {
     let (e, admin, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
-
-    client.configure(&admin, &0);
 
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
