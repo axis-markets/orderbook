@@ -5,7 +5,7 @@ use soroban_sdk::{token::StellarAssetClient, Address, Vec};
 
 #[test]
 fn test_fill_order_empty_orders_list() {
-    let (e, admin, trader, _issuer, usd, eur) = setup_test();
+    let (e, trader, _issuer, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -35,7 +35,7 @@ fn test_fill_order_empty_orders_list() {
 #[test]
 #[should_panic]
 fn test_fill_order_taker_not_found() {
-    let (e, admin, trader, _issuer, usd, eur) = setup_test();
+    let (e, trader, _issuer, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 

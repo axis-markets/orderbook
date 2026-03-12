@@ -4,7 +4,7 @@ use soroban_sdk::{token::StellarAssetClient, Vec};
 
 #[test]
 fn test_order_retrieval() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -31,7 +31,7 @@ fn test_order_retrieval() {
 }
 #[test]
 fn test_last_after_order_creation() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -60,7 +60,7 @@ fn test_last_after_order_creation() {
 
 #[test]
 fn test_order_not_found() {
-    let (e, admin, _, _, _, _) = setup_test();
+    let (e, _, _, _, _) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 

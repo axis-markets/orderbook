@@ -5,7 +5,7 @@ use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 
 #[test]
 fn test_sell_limit_creates_order() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -43,7 +43,7 @@ fn test_sell_limit_creates_order() {
 #[test]
 #[should_panic]
 fn test_sell_limit_insufficient_balance() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -60,7 +60,6 @@ fn test_sell_limit_insufficient_balance() {
 fn test_sell_limit_requires_auth() {
     let e = Env::default();
     // Don't mock auth
-    let admin = Address::generate(&e);
     let trader = Address::generate(&e);
     let issuer = Address::generate(&e);
     let usd = fake_asset(&e, &issuer);

@@ -155,8 +155,12 @@ fn trade_with_order(
 ) {
     let maker = order.owner;
     //add amounts to settle
-    dispatcher.add(&taker, &maker, &order.selling, sold_to_order);
-    dispatcher.add(&maker, &taker, &order.buying, bought_from_order);
+    dispatcher.add(&taker, &maker, &order.buying, sold_to_order);
+    dispatcher.add(&e.current_contract_address(), &taker, &order.selling, bought_from_order);
+
+    //TODO: settle directly
+    //dispatcher.add(&taker, &maker, &order.selling, sold_to_order);
+    //dispatcher.add(&maker, &taker, &order.buying, bought_from_order);
     //prepare and emit trade event
     let trade = trade::Trade {
         id: trade::next_trade_id(e),

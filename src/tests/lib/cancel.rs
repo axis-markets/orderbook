@@ -5,7 +5,7 @@ use soroban_sdk::{token::StellarAssetClient, Address,  Vec};
 
 #[test]
 fn test_cancel_success() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -48,7 +48,7 @@ fn test_cancel_success() {
 
 #[test]
 fn test_cancel_non_existent_order() {
-    let (e, admin, trader, _, _, _) = setup_test();
+    let (e, trader, _, _, _) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -58,7 +58,7 @@ fn test_cancel_non_existent_order() {
 
 #[test]
 fn test_cancel_multiple_orders() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -96,7 +96,7 @@ fn test_cancel_multiple_orders() {
 
 #[test]
 fn test_cancel_after_partial_fill() {
-    let (e, admin, maker, _, usd, eur) = setup_test();
+    let (e, maker, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 
@@ -130,7 +130,7 @@ fn test_cancel_after_partial_fill() {
 #[test]
 #[should_panic]
 fn test_cancel_wrong_owner() {
-    let (e, admin, trader, _, usd, eur) = setup_test();
+    let (e, trader, _, usd, eur) = setup_test();
     let contract_address = e.register(SorobanOrderbook, ());
     let client = SorobanOrderbookClient::new(&e, &contract_address);
 

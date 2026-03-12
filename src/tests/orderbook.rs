@@ -36,7 +36,6 @@ fn test_fill(
     let e = Env::default();
     e.mock_all_auths();
 
-    let admin = Address::generate(&e);
     let maker = Address::generate(&e);
     let trader = Address::generate(&e);
     let issuer = Address::generate(&e);

@@ -1,4 +1,3 @@
-use core::ops::Add;
 use soroban_sdk::{contracttype, Address, Env};
 
 const LAST_TRADE_ID: &str = "lt";

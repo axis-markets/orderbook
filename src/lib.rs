@@ -1,4 +1,5 @@
 #![no_std]
+mod dispatcher;
 mod errors;
 mod events;
 mod order;
@@ -6,13 +7,14 @@ mod orderbook;
 mod settings;
 mod tests;
 mod trade;
-mod dispatcher;
+mod utils;
 
+use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
 use crate::settings::{bump_instance, PRECISION};
+use crate::utils::shorten;
 use order::{Order, OrderType};
-use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
-use crate::dispatcher::Dispatcher;
+use soroban_sdk::{contract, contractimpl, log, Address, Env, Vec};
 
 #[contract]
 pub struct SorobanOrderbook;
@@ -103,9 +105,23 @@ impl SorobanOrderbook {
                 order_amount = amount - sold; //partially executed
             }
         }
+        log!(
+            &e,
+            "create order",
+            shorten(&trader),
+            shorten(&selling),
+            shorten(&buying),
+            order_amount,
+            price
+        );
         //deposit selling tokens to contract
-        let token_client = token::Client::new(&e, &selling);
-        token_client.transfer(&trader, &e.current_contract_address(), &order_amount);
+        Dispatcher::transfer(
+            &e,
+            &trader,
+            &e.current_contract_address(),
+            &selling,
+            order_amount,
+        );
 
         //add new order to orderbook
         let orderid = order::create_order(
@@ -149,11 +165,12 @@ impl SorobanOrderbook {
                 e.panic_with_error(OrderbookError::NotAuthorized)
             }
             //return unsold tokens to the trader
-            let selling_client = token::Client::new(&e, &order_to_remove.selling);
-            selling_client.transfer(
+            Dispatcher::transfer(
+                &e,
                 &e.current_contract_address(),
                 &trader,
-                &order_to_remove.amount,
+                &order_to_remove.selling,
+                order_to_remove.amount,
             );
             //remove order from the book
             order::remove_order(&e, &order_to_remove);
@@ -198,8 +215,16 @@ impl SorobanOrderbook {
         //let max_exec_price = invert_price(&e, max_price);
         let mut dispatcher = Dispatcher::new(&e);
         //trade
-        let (total_sold, total_bought) =
-            orderbook::execute_orders(&e, &trader, amount, &selling, &buying, max_price, orders, &mut dispatcher);
+        let (total_sold, total_bought) = orderbook::execute_orders(
+            &e,
+            &trader,
+            amount,
+            &selling,
+            &buying,
+            max_price,
+            orders,
+            &mut dispatcher,
+        );
         dispatcher.settle();
         /*//init token clients
         let selling_client = token::Client::new(&e, &selling);
@@ -209,7 +234,6 @@ impl SorobanOrderbook {
         selling_client.transfer(&trader, &this, &total_sold);
         for trade in trades.iter() {
             //transfer funds from contract to maker
-            //TODO: group by taker/maker pair
             selling_client.transfer(&this, &trade.maker, &trade.sold);
         }
         //transfer bought tokens to trader
@@ -243,7 +267,8 @@ impl SorobanOrderbook {
     ) -> (i128, i128) {
         //TODO: trader should receive all profits saved from matching existing orders and removing inefficiency
         let mut dispatcher = Dispatcher::new(&e);
-        let (sold, bought) = orderbook::cross_orders(&e, &trader, taker_order_id, orders, &mut dispatcher);
+        let (sold, bought) =
+            orderbook::cross_orders(&e, &trader, taker_order_id, orders, &mut dispatcher);
         dispatcher.settle();
         (sold, bought)
     }
