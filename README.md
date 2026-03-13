@@ -4,19 +4,12 @@
 
 ## Interface
 
-`fn configure(admin: Address, fee: u32)`   
-Configure contract settings
-
-Arguments
-- `admin` - Admin account address
-- `fee` - Trade fee paid by the taker (in ‰)
-
-Panics
-- Panics if the contract is already initialized
+`fn __constructor(e: Env)`
+Initialize the contract (called automatically on deployment)
 
 ---
 
-`fn last() -> u64`  
+`fn last() -> u64`
 Get last order id
 
 Returns
@@ -33,7 +26,7 @@ Arguments
 Returns
 - Order fetched from the storage
 
-`fn sell_limit(trader: Address, amount: i128, selling: Address, buying: Address, price: i128, ttl: u64, orders: Vec<u64>) -> (i128, i128, u64)`  
+`fn sell_limit(trader: Address, amount: i128, selling: Address, buying: Address, price: i128, orders: Vec<u64>) -> (i128, i128, u64)`
 Trade with DEX and create sell limit order if quote not executed in full
 
 Arguments
@@ -42,7 +35,6 @@ Arguments
 - `selling` - Selling token address
 - `buying` - Buying token address
 - `price` - Min price a trader willing to accept
-- `ttl` - Time to live for an order (expired orders will be automatically purged)
 - `orders` - Optional list of order IDs to match before creating the order on chain
 
 Returns
@@ -51,7 +43,7 @@ Returns
 - ID of the newly created order if any
 
 Panics
-- If the trader doesn’t have sufficient balance
+- If the trader doesn't have sufficient balance
 - If any of the orders provided do not match selling/buying asset
 - If the trade causes an overflow
 
@@ -146,10 +138,6 @@ struct Trade {
     pub taker: Address,
     //seller account address
     pub maker: Address,
-    //selling token
-    pub selling: Address,
-    //buying token
-    pub buying: Address,
     //sold tokens amount
     pub sold: i128,
     //bought tokens amount
@@ -172,18 +160,14 @@ enum OrderbookError {
 
 ## Events
 
-**OrderCreated**  
-Topics: `["orderbook": Symbol, "created": Symbol]`  
-Body: `Order`
+**OrderEvent**
 
-**OrderRemoved**  
-Topics: `["orderbook": Symbol, "removed": Symbol]`  
-Body: `Order`
+Topics: `["AXIS", "order", action: Symbol, selling: Address, buying: Address]`  
+Body: `Order`  
+Action: one of `"created"`|`"updated"`|`"removed"`
 
-**OrderUpdated**  
-Topics: `["orderbook": Symbol, "updated": Symbol]`  
-Body: `Order`
 
-**Trade**  
-Topics: `["orderbook": Symbol, "trade": Symbol, "selling": Address, "buying": Address]`  
+**TradeEvent**
+
+Topics: `["AXIS", "trade", selling: Address, buying: Address]`  
 Body: `Trade`
