@@ -1,5 +1,5 @@
 use crate::orderbook::invert_price;
-use crate::{SorobanOrderbook, SorobanOrderbookClient, PRECISION};
+use crate::{Axis, AxisClient, PRECISION};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 use test_case::test_case;
@@ -53,8 +53,8 @@ fn test_fill(
 
     let price = PRECISION * d / n;
 
-    let contract_address = e.register(SorobanOrderbook, ());
-    let orderbook_client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let orderbook_client = AxisClient::new(&e, &contract_address);
 
     let (_, _, order_id) = orderbook_client.sell_limit(
         &maker,

@@ -17,10 +17,10 @@ use order::{Order, OrderType};
 use soroban_sdk::{contract, contractimpl, log, Address, Env, Vec};
 
 #[contract]
-pub struct SorobanOrderbook;
+pub struct Axis;
 
 #[contractimpl]
-impl SorobanOrderbook {
+impl Axis {
     /// Create new contract
     pub fn __constructor(e: Env) {}
 
@@ -88,15 +88,23 @@ impl SorobanOrderbook {
         let mut sold = 0;
         let mut bought = 0;
 
+        let mut dispatcher = Dispatcher::new(&e);
+        //deposit selling tokens to contract
+        dispatcher.add(&trader,
+                       &e.current_contract_address(),
+                       &selling,
+                       order_amount);
+
         if orders.len() > 0 {
-            (sold, bought) = SorobanOrderbook::fill(
-                e.clone(),
-                trader.clone(),
+            let (sold, bought) = orderbook::execute_orders(
+                &e,
+                &trader,
                 amount,
-                selling.clone(),
-                buying.clone(),
+                &selling,
+                &buying,
                 price,
                 orders,
+                &mut dispatcher,
             );
             if sold == amount {
                 return (sold, bought, 0); //fully executed
@@ -105,6 +113,7 @@ impl SorobanOrderbook {
                 order_amount = amount - sold; //partially executed
             }
         }
+        dispatcher.settle();
         log!(
             &e,
             "create order",
@@ -113,14 +122,6 @@ impl SorobanOrderbook {
             shorten(&buying),
             order_amount,
             price
-        );
-        //deposit selling tokens to contract
-        Dispatcher::transfer(
-            &e,
-            &trader,
-            &e.current_contract_address(),
-            &selling,
-            order_amount,
         );
 
         //add new order to orderbook

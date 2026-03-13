@@ -1,13 +1,13 @@
 use super::setup::setup_test;
-use crate::{SorobanOrderbook, SorobanOrderbookClient, PRECISION};
+use crate::{Axis, AxisClient, PRECISION};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Vec};
 
 #[test]
 fn test_fill_order_empty_orders_list() {
     let (e, trader, _issuer, usd, eur) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     let arbitrageur = Address::generate(&e);
     let usd_client = StellarAssetClient::new(&e, &usd);
@@ -36,8 +36,8 @@ fn test_fill_order_empty_orders_list() {
 #[should_panic]
 fn test_fill_order_taker_not_found() {
     let (e, trader, _issuer, usd, eur) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     let maker = Address::generate(&e);
     let eur_client = StellarAssetClient::new(&e, &eur);

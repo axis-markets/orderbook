@@ -1,12 +1,12 @@
 use super::setup::setup_test;
-use crate::{SorobanOrderbook, SorobanOrderbookClient, PRECISION};
+use crate::{Axis, AxisClient, PRECISION};
 use soroban_sdk::{token::StellarAssetClient, Vec};
 
 #[test]
 fn test_order_retrieval() {
     let (e, trader, _, usd, eur) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
@@ -32,8 +32,8 @@ fn test_order_retrieval() {
 #[test]
 fn test_last_after_order_creation() {
     let (e, trader, _, usd, eur) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
@@ -61,8 +61,8 @@ fn test_last_after_order_creation() {
 #[test]
 fn test_order_not_found() {
     let (e, _, _, _, _) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     // Try to fetch non-existent order
     assert_eq!(client.order(&999), None);

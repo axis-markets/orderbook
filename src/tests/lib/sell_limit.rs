@@ -1,25 +1,31 @@
 use super::setup::{fake_asset, setup_test};
-use crate::{SorobanOrderbook, SorobanOrderbookClient, PRECISION};
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
+use crate::{Axis, AxisClient, PRECISION};
+use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{token::StellarAssetClient, Address, Env, IntoVal, Vec};
 
 #[test]
 fn test_sell_limit_creates_order() {
     let (e, trader, _, usd, eur) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     // Mint tokens to trader
     let usd_client = StellarAssetClient::new(&e, &usd);
     usd_client.mint(&trader, &10000);
 
-
     let initial_balance = usd_client.balance(&trader);
     // Create sell limit order
     let amount = 1000;
     // Create sell limit order
-    let (sold, bought, order_id) =
-        client.sell_limit(&trader, &amount, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (sold, bought, order_id) = client.sell_limit(
+        &trader,
+        &amount,
+        &usd,
+        &eur,
+        &PRECISION,
+        &100,
+        &Vec::new(&e),
+    );
 
     // Should not be filled (no matching orders)
     assert_eq!(sold, 0);
@@ -41,11 +47,11 @@ fn test_sell_limit_creates_order() {
 //TODO: test partial and complete filling
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "#10")]
 fn test_sell_limit_insufficient_balance() {
     let (e, trader, _, usd, eur) = setup_test();
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
     // Don't mint enough tokens
     let usd_client = StellarAssetClient::new(&e, &usd);
@@ -56,7 +62,7 @@ fn test_sell_limit_insufficient_balance() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "\"contract call failed\", sell_limit")]
 fn test_sell_limit_requires_auth() {
     let e = Env::default();
     // Don't mock auth
@@ -65,10 +71,12 @@ fn test_sell_limit_requires_auth() {
     let usd = fake_asset(&e, &issuer);
     let eur = fake_asset(&e, &issuer);
 
-    let contract_address = e.register(SorobanOrderbook, ());
-    let client = SorobanOrderbookClient::new(&e, &contract_address);
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
 
-    e.mock_all_auths(); // Mock only for configure
+    // Don't mint enough tokens
+    let usd_client = StellarAssetClient::new(&e, &usd);
+    usd_client.mock_all_auths().mint(&trader, &10000);
 
     // This should panic because trader auth is not provided
     client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
