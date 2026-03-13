@@ -1,7 +1,7 @@
 use super::setup::{fake_asset, setup_test};
-use crate::{Axis, AxisClient, PRECISION};
-use soroban_sdk::testutils::{Address as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{token::StellarAssetClient, Address, Env, IntoVal, Vec};
+use crate::{orderbook::PRECISION, Axis, AxisClient};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 
 #[test]
 fn test_sell_limit_creates_order() {
@@ -17,15 +17,8 @@ fn test_sell_limit_creates_order() {
     // Create sell limit order
     let amount = 1000;
     // Create sell limit order
-    let (sold, bought, order_id) = client.sell_limit(
-        &trader,
-        &amount,
-        &usd,
-        &eur,
-        &PRECISION,
-        &100,
-        &Vec::new(&e),
-    );
+    let (sold, bought, order_id) =
+        client.sell_limit(&trader, &amount, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Should not be filled (no matching orders)
     assert_eq!(sold, 0);
@@ -43,7 +36,6 @@ fn test_sell_limit_creates_order() {
     assert_eq!(trader_balance, initial_balance - amount);
     assert_eq!(contract_balance, amount);
 }
-//TODO: test TTL
 //TODO: test partial and complete filling
 
 #[test]
@@ -58,7 +50,7 @@ fn test_sell_limit_insufficient_balance() {
     usd_client.mint(&trader, &100);
 
     // Try to create order for more than balance - should panic
-    client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 }
 
 #[test]
@@ -79,5 +71,5 @@ fn test_sell_limit_requires_auth() {
     usd_client.mock_all_auths().mint(&trader, &10000);
 
     // This should panic because trader auth is not provided
-    client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 }

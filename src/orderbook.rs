@@ -2,9 +2,10 @@ use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
 use crate::events::emit_trade;
 use crate::order::{load_order, remove_order, update_order, Order};
-use crate::settings::PRECISION;
 use crate::trade;
 use soroban_sdk::{Address, Env, Vec};
+
+pub const PRECISION: i128 = 10i128.pow(18);
 
 pub fn invert_price(e: &Env, price: i128) -> i128 {
     let res = PRECISION * PRECISION / price;
@@ -156,7 +157,12 @@ fn trade_with_order(
     let maker = order.owner;
     //add amounts to settle
     dispatcher.add(&taker, &maker, &order.buying, sold_to_order);
-    dispatcher.add(&e.current_contract_address(), &taker, &order.selling, bought_from_order);
+    dispatcher.add(
+        &e.current_contract_address(),
+        &taker,
+        &order.selling,
+        bought_from_order,
+    );
 
     //TODO: settle directly
     //dispatcher.add(&taker, &maker, &order.selling, sold_to_order);

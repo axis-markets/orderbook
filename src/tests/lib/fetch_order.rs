@@ -1,5 +1,5 @@
 use super::setup::setup_test;
-use crate::{Axis, AxisClient, PRECISION};
+use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::{token::StellarAssetClient, Vec};
 
 #[test]
@@ -16,8 +16,7 @@ fn test_order_retrieval() {
     let price = PRECISION;
 
     // Create an order
-    let (_, _, order_id) =
-        client.sell_limit(&trader, &amount, &usd, &eur, &price, &100, &Vec::new(&e));
+    let (_, _, order_id) = client.sell_limit(&trader, &amount, &usd, &eur, &price, &Vec::new(&e));
 
     // Retrieve the order
     let order = client.order(&order_id).unwrap();
@@ -43,8 +42,7 @@ fn test_last_after_order_creation() {
     let last_id = client.last();
     assert_eq!(last_id, 0);
     // Create an order
-    let (_, _, order_id) =
-        client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, order_id) = client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Last order ID should match the created order
     let last_id = client.last();
@@ -52,8 +50,7 @@ fn test_last_after_order_creation() {
     assert_eq!(last_id, 1);
 
     // Create second order
-    let (_, _, orderid2) =
-        client.sell_limit(&trader, &2000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, orderid2) = client.sell_limit(&trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
     assert_eq!(orderid2, 2);
     assert_eq!(client.last(), 2);
 }

@@ -1,5 +1,5 @@
 use super::setup::setup_test;
-use crate::{Axis, AxisClient, PRECISION};
+use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Vec};
 
@@ -17,7 +17,7 @@ fn test_fill_order_empty_orders_list() {
 
     // Create taker order
     let (_, _, taker_order_id) =
-        client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+        client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Try to fill with empty orders list
     let orders = Vec::new(&e);
@@ -47,7 +47,7 @@ fn test_fill_order_taker_not_found() {
 
     // Create maker order
     let (_, _, maker_order_id) =
-        client.sell_limit(&maker, &1000, &eur, &usd, &PRECISION, &100, &Vec::new(&e));
+        client.sell_limit(&maker, &1000, &eur, &usd, &PRECISION, &Vec::new(&e));
 
     // Try to fill non-existent taker order - should panic
     let orders = Vec::from_array(&e, [maker_order_id]);

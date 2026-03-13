@@ -4,14 +4,14 @@ mod errors;
 mod events;
 mod order;
 mod orderbook;
-mod settings;
 mod tests;
 mod trade;
+mod ttl;
 mod utils;
 
 use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
-use crate::settings::{bump_instance, PRECISION};
+use crate::ttl::bump_instance;
 use crate::utils::shorten;
 use order::{Order, OrderType};
 use soroban_sdk::{contract, contractimpl, log, Address, Env, Vec};
@@ -56,7 +56,6 @@ impl Axis {
     /// * `selling` - Selling token address
     /// * `buying` - Buying token address
     /// * `price` - Min price a trader willing to accept
-    /// * `ttl` - Time to live for an order (expired orders will be automatically purged)
     /// * `orders` - Optional list of order IDs to match before creating the order on chain
     ///
     /// # Returns
@@ -77,12 +76,11 @@ impl Axis {
         selling: Address,
         buying: Address,
         price: i128,
-        ttl: u64, //time to live in seconds
         orders: Vec<u64>,
     ) -> (i128, i128, u64) {
         trader.require_auth();
         bump_instance(&e);
-        // TODO: check deposit min amount
+        // TODO: check deposit min amount in buy_limit
         //let deposit: i128 = amount * max_price / PRECISION;
         let mut order_amount = amount;
         let mut sold = 0;
@@ -90,10 +88,12 @@ impl Axis {
 
         let mut dispatcher = Dispatcher::new(&e);
         //deposit selling tokens to contract
-        dispatcher.add(&trader,
-                       &e.current_contract_address(),
-                       &selling,
-                       order_amount);
+        dispatcher.add(
+            &trader,
+            &e.current_contract_address(),
+            &selling,
+            order_amount,
+        );
 
         if orders.len() > 0 {
             let (sold, bought) = orderbook::execute_orders(
@@ -133,7 +133,6 @@ impl Axis {
             selling,
             buying,
             price,
-            ttl,
         );
         //return selling/buying amounts and new order ID
         (sold, bought, orderid)
@@ -186,7 +185,6 @@ impl Axis {
     /// * `selling` - Selling token address
     /// * `buying` - Buying token address
     /// * `max_price` - Max price a trader willing to pay
-    /// * `ttl` - Time to live for an order (expired orders will be automatically purged)
     /// * `orders` - List of order IDs to match before creating the order on chain
     ///
     /// # Returns
@@ -226,19 +224,9 @@ impl Axis {
             orders,
             &mut dispatcher,
         );
+        //settle transfers
         dispatcher.settle();
-        /*//init token clients
-        let selling_client = token::Client::new(&e, &selling);
-        let buying_client = token::Client::new(&e, &buying);
 
-        //transfer sold tokens from trader (taker) to contract
-        selling_client.transfer(&trader, &this, &total_sold);
-        for trade in trades.iter() {
-            //transfer funds from contract to maker
-            selling_client.transfer(&this, &trade.maker, &trade.sold);
-        }
-        //transfer bought tokens to trader
-        buying_client.transfer(&this, &trader, &total_bought);*/
         //return fill result
         (total_sold, total_bought)
     }

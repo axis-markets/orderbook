@@ -1,7 +1,7 @@
 use super::setup::setup_test;
-use crate::{Axis, AxisClient, PRECISION};
+use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token::StellarAssetClient, Address,  Vec};
+use soroban_sdk::{token::StellarAssetClient, Address, Vec};
 
 #[test]
 fn test_cancel_success() {
@@ -17,15 +17,8 @@ fn test_cancel_success() {
     let amount = 1000;
 
     // Create an order
-    let (_, _, order_id) = client.sell_limit(
-        &trader,
-        &amount,
-        &usd,
-        &eur,
-        &PRECISION,
-        &100,
-        &Vec::new(&e),
-    );
+    let (_, _, order_id) =
+        client.sell_limit(&trader, &amount, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Verify tokens were transferred to contract
     assert_eq!(usd_client.balance(&trader), initial_balance - amount);
@@ -69,14 +62,11 @@ fn test_cancel_multiple_orders() {
     let initial_balance = usd_client.balance(&trader);
 
     // Create multiple orders
-    let (_, _, order1) =
-        client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, order1) = client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
-    let (_, _, order2) =
-        client.sell_limit(&trader, &2000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, order2) = client.sell_limit(&trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
-    let (_, _, order3) =
-        client.sell_limit(&trader, &3000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, order3) = client.sell_limit(&trader, &3000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Cancel second order
     client.cancel(&order2, &trader);
@@ -109,11 +99,10 @@ fn test_cancel_after_partial_fill() {
     eur_client.mint(&taker, &10000);
 
     // Create a large order
-    let (_, _, order_id) =
-        client.sell_limit(&maker, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, order_id) = client.sell_limit(&maker, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Partially fill it
-    client.sell_limit(&taker, &300, &eur, &usd, &PRECISION, &100, &Vec::new(&e));
+    client.sell_limit(&taker, &300, &eur, &usd, &PRECISION, &Vec::new(&e));
 
     let orders = Vec::from_array(&e, [order_id]);
     client.fill(&taker, &300, &eur, &usd, &PRECISION, &orders);
@@ -139,8 +128,7 @@ fn test_cancel_wrong_owner() {
     usd_client.mint(&trader, &10000);
 
     // Create an order
-    let (_, _, order_id) =
-        client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &100, &Vec::new(&e));
+    let (_, _, order_id) = client.sell_limit(&trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Try to cancel with different address - should panic
     let other_trader = Address::generate(&e);

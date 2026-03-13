@@ -2,6 +2,7 @@ use crate::events;
 use soroban_sdk::{contracttype, symbol_short, Address, Env};
 
 const LAST_ORDER_ID: &str = "lo";
+const DEFAULT_TTL: u64 = 30 * 24 * 60 * 60; //30 days
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,7 +57,6 @@ pub fn create_order(
     selling: Address,
     buying: Address,
     price: i128,
-    ttl: u64,
 ) -> u64 {
     //get next sequential order id
     let id = next_order_id(&e);
@@ -70,7 +70,7 @@ pub fn create_order(
         selling,
         buying,
         price,
-        expires: e.ledger().timestamp() + ttl,
+        expires: e.ledger().timestamp() + DEFAULT_TTL,
     };
     e.storage().persistent().set(&id, &new_order);
     events::emit_order_event(e, symbol_short!("created"), new_order);
