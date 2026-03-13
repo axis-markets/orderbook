@@ -96,7 +96,7 @@ impl Axis {
         );
 
         if orders.len() > 0 {
-            let (sold, bought) = orderbook::execute_orders(
+            (sold, bought) = orderbook::execute_orders(
                 &e,
                 &trader,
                 amount,
@@ -106,10 +106,10 @@ impl Axis {
                 orders,
                 &mut dispatcher,
             );
-            if sold == amount {
-                return (sold, bought, 0); //fully executed
-            }
             if sold > 0 {
+                if sold == amount {
+                    return (sold, bought, 0); //fully executed
+                }
                 order_amount = amount - sold; //partially executed
             }
         }
