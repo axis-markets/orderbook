@@ -2,28 +2,33 @@ use soroban_sdk::{contracttype, Address, Env};
 
 const LAST_TRADE_ID: &str = "lt";
 
+/// Orderbook trade event
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Trade {
-    //unique trade id
+    /// Unique trade id
     pub id: u64,
-    //order id
+    /// Order id
     pub order: u64,
-    //trader account address
+    /// Trader account address
     pub taker: Address,
-    //seller account address
+    /// Seller account address
     pub maker: Address,
-    //sold tokens amount
+    /// Sold asset address
+    pub selling: Address,
+    /// Bought asset address
+    pub buying: Address,
+    /// Sold tokens amount
     pub sold: i128,
-    //bought tokens amount
+    /// Bought tokens amount
     pub bought: i128,
 }
 
-pub fn get_last_trade_id(e: &Env) -> u64 {
+pub(crate) fn get_last_trade_id(e: &Env) -> u64 {
     e.storage().instance().get(&LAST_TRADE_ID).unwrap_or(0)
 }
 
-pub fn next_trade_id(e: &Env) -> u64 {
+pub(crate) fn next_trade_id(e: &Env) -> u64 {
     let last = get_last_trade_id(&e) + 1;
     e.storage().instance().set(&LAST_TRADE_ID, &last);
     last

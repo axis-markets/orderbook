@@ -7,7 +7,7 @@ use soroban_sdk::{Address, Env, Vec};
 
 pub const PRECISION: i128 = 10i128.pow(18);
 
-pub fn invert_price(e: &Env, price: i128) -> i128 {
+pub(crate) fn invert_price(e: &Env, price: i128) -> i128 {
     let res = PRECISION * PRECISION / price;
     if res < 0 {
         e.panic_with_error(OrderbookError::Overflow);
@@ -15,7 +15,7 @@ pub fn invert_price(e: &Env, price: i128) -> i128 {
     res
 }
 
-pub fn execute_orders(
+pub(crate) fn execute_orders(
     e: &Env,
     taker: &Address,
     amount: i128,
@@ -24,12 +24,13 @@ pub fn execute_orders(
     max_price: i128,
     orders: Vec<u64>,
     dispatcher: &mut Dispatcher,
-) -> (i128, i128) {
+) -> (i128, i128, Vec<(Order, i128)>) {
     let max_exec_price = invert_price(&e, max_price);
     let now = e.ledger().timestamp();
     let mut total_bought = 0i128;
     let mut total_sold = 0i128;
     let mut amount_left = amount;
+    let mut order_changes: Vec<(Order, i128)> = Vec::new(&e);
 
     for maker_order_id in orders.iter() {
         //load order from storage
@@ -38,7 +39,7 @@ pub fn execute_orders(
         if fetched_maker_order.is_none() {
             continue;
         }
-        let mut order = fetched_maker_order.unwrap();
+        let order = fetched_maker_order.unwrap();
         //make sure that we are trading correct tokens
         if &order.selling != buying || &order.buying != selling {
             e.panic_with_error(OrderbookError::InvalidMatch)
@@ -66,8 +67,10 @@ pub fn execute_orders(
                 }
             }
         }
+        //schedule settlement and emit trade event
+        trade_with_order(&e, &order, &taker, bought, sold, dispatcher);
         //update maker order amount
-        apply_order_trade(e, &mut order, bought);
+        order_changes.push_back((order, bought));
         //accumulate
         total_bought += bought;
         total_sold += sold;
@@ -77,8 +80,6 @@ pub fn execute_orders(
             //bought more than planned
             e.panic_with_error(OrderbookError::Overflow);
         }
-        //create trade descriptor
-        trade_with_order(&e, order, taker.clone(), bought, sold, dispatcher);
         //stop iterating if fully executed
         if amount_left == 0 {
             break;
@@ -91,10 +92,10 @@ pub fn execute_orders(
     {
         e.panic_with_error(OrderbookError::InvalidMatch);
     }
-    (total_sold, total_bought)
+    (total_sold, total_bought, order_changes)
 }
 
-pub fn cross_orders(
+pub(crate) fn cross_orders(
     e: &Env,
     trader: &Address,
     taker_order_id: u64,
@@ -108,7 +109,7 @@ pub fn cross_orders(
     }
     let mut taker_order = fetched_taker_order.unwrap();
     //try to fill the order
-    let (sold, bought) = execute_orders(
+    let (sold, bought, order_changes) = execute_orders(
         &e,
         &trader,
         taker_order.amount,
@@ -120,17 +121,21 @@ pub fn cross_orders(
     );
     //if the trade was successful
     if sold > 0 {
+        //schedule settlement and emit trade event
+        trade_with_order(&e, &taker_order, &trader, sold, bought, dispatcher);
+        //apply order changes
+        for (mut order, change) in order_changes.iter() {
+            apply_order_trade(&e, &mut order, change);
+        }
         //update taker order amount
         apply_order_trade(&e, &mut taker_order, sold);
-        //emit event
-        trade_with_order(&e, taker_order, trader.clone(), sold, bought, dispatcher);
     }
 
     //return actual sold/bought amounts
     (sold, bought)
 }
 
-fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
+pub(crate) fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
     if bought_from_order == order.amount {
         //executed in full - remove from orderbook
         remove_order(e, &order);
@@ -148,33 +153,36 @@ fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
 
 fn trade_with_order(
     e: &Env,
-    order: Order,
-    taker: Address,
+    order: &Order,
+    taker: &Address,
     bought_from_order: i128,
     sold_to_order: i128,
     dispatcher: &mut Dispatcher,
 ) {
-    let maker = order.owner;
+    let maker = order.owner.clone();
     //add amounts to settle
-    dispatcher.add(&taker, &maker, &order.buying, sold_to_order);
+    dispatcher.add(taker, &maker, &order.buying, sold_to_order);
     dispatcher.add(
         &e.current_contract_address(),
-        &taker,
+        taker,
         &order.selling,
         bought_from_order,
     );
 
-    //TODO: settle directly
+    //TODO: settle directly, without contract using approvals
     //dispatcher.add(&taker, &maker, &order.selling, sold_to_order);
     //dispatcher.add(&maker, &taker, &order.buying, bought_from_order);
+
     //prepare and emit trade event
     let trade = trade::Trade {
         id: trade::next_trade_id(e),
         order: order.id,
-        taker,
+        taker: taker.clone(),
         maker,
+        selling: order.buying.clone(),
+        buying: order.selling.clone(),
         sold: sold_to_order,
         bought: bought_from_order,
     };
-    emit_trade(&e, order.buying, order.selling, trade);
+    emit_trade(&e, order.buying.clone(), order.selling.clone(), trade);
 }

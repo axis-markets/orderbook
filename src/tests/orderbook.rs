@@ -3,6 +3,7 @@ use crate::{Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 use test_case::test_case;
+use crate::order::OrderKind;
 
 //rounding
 #[test_case(3, 2, 3000, 4501, 3000, 4501)]
@@ -57,9 +58,10 @@ fn test_fill(
     let orderbook_client = AxisClient::new(&e, &contract_address);
 
     let (_, _, order_id) =
-        orderbook_client.sell_limit(&maker, &x_order_amount, &usd, &eur, &price, &Vec::new(&e));
+        orderbook_client.sell(&OrderKind::Limit, &maker, &x_order_amount, &usd, &eur, &price, &Vec::new(&e));
     let orders = Vec::from_array(&e, [order_id]);
-    let (bought, sold) = orderbook_client.fill(
+    let (bought, sold, _) = orderbook_client.sell(
+        &OrderKind::Fill,
         &trader,
         &y_trade_amount,
         &eur,

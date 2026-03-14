@@ -2,46 +2,38 @@ use crate::order::Order;
 use crate::trade::Trade;
 use soroban_sdk::{contractevent, Address, Env, Symbol};
 
-/*pub struct TradeInfo {
-    //unique trade id
-    pub id: u64,
-    //order id
-    pub order: u64,
-    //trader account address
-    pub taker: Address,
-    //seller account address
-    pub maker: Address,
-    //sold tokens amount
-    pub sold: i128,
-    //bought tokens amount
-    pub bought: i128,
-}*/
-
 #[contractevent(topics = ["AXIS", "trade"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TradeEvent {
+    /// Sold asset address
     #[topic]
     pub selling: Address,
+    /// Bought asset address
     #[topic]
     //TODO: consider adding taker and owner addresses
     pub buying: Address,
+    /// Trade details
     pub trade: Trade,
 }
 
 #[contractevent(topics = ["AXIS", "order"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderEvent {
+    /// Order change type: "created"|"updated"|"removed"
     #[topic]
     pub action: Symbol,
+    /// Selling asset address
     #[topic]
     pub selling: Address,
+    /// Buying asset address
     #[topic]
     //TODO: consider adding taker and owner addresses
     pub buying: Address,
+    /// Order details
     pub order: Order,
 }
 
-pub fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trade) {
+pub(crate) fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trade) {
     TradeEvent {
         selling,
         buying,
@@ -50,12 +42,12 @@ pub fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trade) {
     .publish(e);
 }
 
-pub fn emit_order_event(e: &Env, action: Symbol, order: Order) {
+pub(crate) fn emit_order_event(e: &Env, action: Symbol, order: Order) {
     OrderEvent {
         action,
         selling: order.selling.clone(),
         buying: order.buying.clone(),
         order,
     }
-    .publish(e); //TODO: consider adding kind and owner
+    .publish(e); //TODO: consider adding owner to topics
 }

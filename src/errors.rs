@@ -1,6 +1,6 @@
 use soroban_sdk::contracterror;
 
-// Standard contract errors
+/// Standard contract errors
 #[contracterror]
 #[repr(i16)]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]

@@ -1,6 +1,6 @@
 use crate::errors::OrderbookError;
-use soroban_sdk::{log, token, Address, Env, Map};
 use crate::utils::shorten;
+use soroban_sdk::{log, token, Address, Env, Map};
 
 pub(crate) struct Dispatcher {
     map: Map<Address, Map<(Address, Address), i128>>,
@@ -13,14 +13,25 @@ impl Dispatcher {
 
     pub fn add(&mut self, from: &Address, to: &Address, asset: &Address, amount: i128) {
         let e = self.map.env();
-        if amount <= 0 {
-            self.map.env().panic_with_error(OrderbookError::Overflow);
+        if amount < 0 {
+            e.panic_with_error(OrderbookError::Overflow);
         }
-        log!(&e, "scheduled transfer", shorten(from), shorten(to), shorten(asset), amount);
+        log!(
+            &e,
+            "scheduled transfer",
+            shorten(from),
+            shorten(to),
+            shorten(asset),
+            amount
+        );
         let mut asset_container = self.map.get(asset.clone()).unwrap_or_else(|| Map::new(e));
         let key = (from.clone(), to.clone());
         let current = asset_container.get(key.clone()).unwrap_or_default();
-        asset_container.set(key, current + amount);
+        let new_value = current + amount;
+        if new_value < 0 {
+            e.panic_with_error(OrderbookError::Overflow);
+        }
+        asset_container.set(key, new_value);
         self.map.set(asset.clone(), asset_container);
     }
 
@@ -30,8 +41,17 @@ impl Dispatcher {
         for (asset, asset_container) in self.map.iter() {
             let client = token::Client::new(&e, &asset);
             for ((from, to), amount) in asset_container.iter() {
-                log!(&e, "transfer", shorten(&from), shorten(&to), shorten(&asset), amount);
-                client.transfer(&from, &to, &amount);
+                if amount > 0 {
+                    log!(
+                        &e,
+                        "transfer",
+                        shorten(&from),
+                        shorten(&to),
+                        shorten(&asset),
+                        amount
+                    );
+                    client.transfer(&from, &to, &amount);
+                }
             }
         }
 
@@ -52,7 +72,14 @@ impl Dispatcher {
     // Transfer tokens
     pub fn transfer(e: &Env, from: &Address, to: &Address, asset: &Address, amount: i128) {
         let client = token::Client::new(&e, &asset);
-        log!(&e, "transfer", shorten(from), shorten(to), shorten(asset), amount);
+        log!(
+            &e,
+            "transfer",
+            shorten(from),
+            shorten(to),
+            shorten(asset),
+            amount
+        );
         client.transfer(&from, &to.clone(), &amount);
     }
 }
