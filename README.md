@@ -4,11 +4,6 @@
 
 ## Interface
 
-`fn __constructor(e: Env)`
-Initialize the contract (called automatically on deployment)
-
----
-
 `fn last() -> u64`
 Get last order id
 
@@ -26,24 +21,27 @@ Arguments
 Returns
 - Order fetched from the storage
 
-`fn sell_limit(trader: Address, amount: i128, selling: Address, buying: Address, price: i128, orders: Vec<u64>) -> (i128, i128, u64)`
-Trade with DEX and create sell limit order if quote not executed in full
+---
+
+`fn sell(kind: OrderKind, trader: Address, amount: i128, selling: Address, buying: Address, price: i128, orders: Vec<u64>) -> (i128, i128, u64)`
+Trade with DEX using one of the supported order types
 
 Arguments
+- `kind` - Order type: `Limit` (create order if not filled), `Fill` (fill only, no order created), `FillOrKill` (cancel if not fully filled)
 - `trader` - Trader address
 - `amount` - Amount of tokens to sell
 - `selling` - Selling token address
 - `buying` - Buying token address
-- `price` - Min price a trader willing to accept
-- `orders` - Optional list of order IDs to match before creating the order on chain
+- `price` - Price the trader willing to accept
+- `orders` - Optional list of order IDs to match before creating the order on-chain
 
 Returns
 - Amount of sold tokens
 - Amount of bought tokens
-- ID of the newly created order if any
+- ID of the newly created order (0 if no order was created)
 
 Panics
-- If the trader doesn't have sufficient balance
+- If the trader has insufficient balance
 - If any of the orders provided do not match selling/buying asset
 - If the trade causes an overflow
 
@@ -58,27 +56,6 @@ Arguments
 
 Panics
 - If trader is not the owner of the order
-
----
-
-`fn fill(trader: Address, amount: i128, selling: Address, buying: Address, max_price: i128, orders: Vec<u64>) -> (i128, i128)`
-Trade with orders
-
-Arguments
-- `trader` - Trader address
-- `amount` - Amount of tokens to sell
-- `selling` - Selling token address
-- `buying` - Buying token address
-- `max_price` - Max price a trader willing to pay
-- `orders` - List of order IDs to match before creating the order on chain
-
-Returns
-- Amount of sold tokens
-- Amount of bought tokens
-
-Panics
-- If any of the orders provided do not match selling/buying asset
-- If the trade causes an overflow
 
 ---
 
@@ -102,27 +79,29 @@ Panics
 ## Order storage format
 
 ```rust
-enum OrderType {
-    Limit
+enum OrderKind {
+    Limit = 1,
+    Fill = 2,
+    FillOrKill = 3,
 }
 
 struct Order {
     pub id: u64,
     //order type
-    pub kind: OrderType,
+    pub kind: OrderKind,
     //selling token address
     pub selling: Address,
     //buying token address
     pub buying: Address,
-    //selling amount left
+    //amount left to sell/buy
     pub amount: i128,
-    //initial selling amount
+    //initial selling/buying amount
     pub quote: i128,
     //maker address
     pub owner: Address,
     //order price
     pub price: i128,
-    //expiration timestamp
+    //expiration timestamp (0 = no expiration)
     pub expires: u64
 }
 ```
