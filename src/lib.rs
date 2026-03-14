@@ -11,7 +11,6 @@ mod utils;
 
 use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
-use crate::orderbook::apply_order_trade;
 use crate::ttl::bump_instance;
 use crate::utils::shorten;
 use order::{Order, OrderKind};
@@ -90,14 +89,11 @@ impl Axis {
         let axis = e.current_contract_address();
         let mut sold = 0;
         let mut bought = 0;
-        let mut order_changes = Vec::new(&e);
 
         let mut dispatcher = Dispatcher::new(&e);
-        //make sure that debit from the trader will be the first operation to avoid isnufficient balance errors
-        dispatcher.add(&trader, &axis, &selling, 0);
         //execute orders if list was provided
         if orders.len() > 0 {
-            (sold, bought, order_changes) = orderbook::execute_orders(
+            (sold, bought) = orderbook::execute_orders(
                 &e,
                 &trader,
                 amount,
@@ -109,21 +105,12 @@ impl Axis {
             );
         }
 
-        // FillOrKill does not allow partial execution
+        //FillOrKill does not allow partial execution
         if kind == OrderKind::FillOrKill && sold < amount {
             return (0, 0, 0);
         }
-        //if there were any trades
-        if sold > 0 {
-            //fund trades
-            dispatcher.add(&trader, &axis, &selling, sold);
-            //apply order changes
-            for (mut order, change) in order_changes.iter() {
-                apply_order_trade(&e, &mut order, change);
-            }
-        }
 
-        //return if executed in full or partial execution allowed
+        //return if executed in full or partial execution requested
         if sold == amount || kind == OrderKind::Fill {
             //settle all payments
             dispatcher.settle();
@@ -132,7 +119,7 @@ impl Axis {
         //not executed in full, need to create limit order
         let order_amount = amount - sold;
         //deposit order tokens to contract
-        dispatcher.add(&trader, &axis, &selling, order_amount);
+        dispatcher.add_transfer(&trader, &axis, &selling, order_amount);
 
         //add new order to orderbook
         log!(

@@ -1,5 +1,6 @@
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{log, Address, Env};
+use crate::utils::shorten;
 
 /// Create a fake Stellar asset for testing
 pub fn fake_asset(env: &Env, issuer: &Address) -> Address {
@@ -16,5 +17,6 @@ pub fn setup_test() -> (Env, Address, Address, Address, Address) {
     let issuer = Address::generate(&e);
     let usd = fake_asset(&e, &issuer);
     let eur = fake_asset(&e, &issuer);
+    log!(&e, "setup | USD: {}, EUR: {}", shorten(&usd), shorten(&eur));
     (e, trader, issuer, usd, eur)
 }

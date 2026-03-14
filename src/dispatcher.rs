@@ -1,18 +1,28 @@
 use crate::errors::OrderbookError;
+use crate::order::Order;
+use crate::trade::Trade;
 use crate::utils::shorten;
-use soroban_sdk::{log, token, Address, Env, Map};
+use soroban_sdk::{log, token, Address, Env, Map, Vec};
+use crate::events::emit_trade;
+use crate::orderbook::apply_order_trade;
 
 pub(crate) struct Dispatcher {
-    map: Map<Address, Map<(Address, Address), i128>>,
+    transfers: Map<Address, Map<(Address, Address), i128>>,
+    changes: Vec<(Order, i128)>,
+    trades: Vec<Trade>,
 }
 
 impl Dispatcher {
     pub fn new(e: &Env) -> Dispatcher {
-        Dispatcher { map: Map::new(e) }
+        Dispatcher {
+            transfers: Map::new(e),
+            changes: Vec::new(e),
+            trades: Vec::new(e),
+        }
     }
 
-    pub fn add(&mut self, from: &Address, to: &Address, asset: &Address, amount: i128) {
-        let e = self.map.env();
+    pub fn add_transfer(&mut self, from: &Address, to: &Address, asset: &Address, amount: i128) {
+        let e = self.transfers.env();
         if amount < 0 {
             e.panic_with_error(OrderbookError::Overflow);
         }
@@ -24,7 +34,10 @@ impl Dispatcher {
             shorten(asset),
             amount
         );
-        let mut asset_container = self.map.get(asset.clone()).unwrap_or_else(|| Map::new(e));
+        let mut asset_container = self
+            .transfers
+            .get(asset.clone())
+            .unwrap_or_else(|| Map::new(e));
         let key = (from.clone(), to.clone());
         let current = asset_container.get(key.clone()).unwrap_or_default();
         let new_value = current + amount;
@@ -32,13 +45,22 @@ impl Dispatcher {
             e.panic_with_error(OrderbookError::Overflow);
         }
         asset_container.set(key, new_value);
-        self.map.set(asset.clone(), asset_container);
+        self.transfers.set(asset.clone(), asset_container);
+    }
+
+    pub fn add_order_changes(&mut self, order: Order, change: i128) {
+        self.changes.push_back((order, change));
+    }
+
+    pub fn add_trade(&mut self, trade: Trade) {
+        self.trades.push_back(trade);
     }
 
     pub fn settle(&self) {
-        let e = self.map.env();
-        log!(&e, "settle", self.map.len());
-        for (asset, asset_container) in self.map.iter() {
+        let e = self.transfers.env();
+        //transfer funds
+        //TODO: use allowances and transfer funds directly
+        for (asset, asset_container) in self.transfers.iter() {
             let client = token::Client::new(&e, &asset);
             for ((from, to), amount) in asset_container.iter() {
                 if amount > 0 {
@@ -54,19 +76,15 @@ impl Dispatcher {
                 }
             }
         }
-
-        /*let selling_client = token::Client::new(&e, &selling);
-        let buying_client = token::Client::new(&e, &buying);
-        //TODO: use allowances and transfer funds directly
-        //transfer sold tokens from trader (taker) to contract
-        selling_client.transfer(&trader, &this, &total_sold);
-        for trade in trades.iter() {
-            //transfer funds from contract to maker
-            //TODO: group by taker/maker pair before settling
-            selling_client.transfer(&this, &trade.maker, &trade.sold);
+        //emit trades
+        for trade in self.trades.iter(){
+            emit_trade(&e, trade.buying.clone(), trade.selling.clone(), trade);
         }
-        //transfer bought tokens to trader
-        buying_client.transfer(&this, &trader, &total_bought);*/
+        //apply order changes
+        for (mut order, change) in self.changes.iter() {
+            apply_order_trade(&e, &mut order, change);
+        }
+        log!(&e, "settled", self.transfers.len());
     }
 
     // Transfer tokens

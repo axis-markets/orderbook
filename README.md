@@ -117,6 +117,10 @@ struct Trade {
     pub taker: Address,
     //seller account address
     pub maker: Address,
+    //sold asset address
+    pub selling: Address,
+    //bought asset address
+    pub buying: Address,
     //sold tokens amount
     pub sold: i128,
     //bought tokens amount

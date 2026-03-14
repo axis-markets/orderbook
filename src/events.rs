@@ -1,6 +1,6 @@
 use crate::order::Order;
 use crate::trade::Trade;
-use soroban_sdk::{contractevent, Address, Env, Symbol};
+use soroban_sdk::{contractevent, log, Address, Env, Symbol};
 
 #[contractevent(topics = ["AXIS", "trade"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +34,7 @@ pub struct OrderEvent {
 }
 
 pub(crate) fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trade) {
+    log!(e, "evt:trade", trade.clone());
     TradeEvent {
         selling,
         buying,
@@ -43,6 +44,7 @@ pub(crate) fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trad
 }
 
 pub(crate) fn emit_order_event(e: &Env, action: Symbol, order: Order) {
+    log!(e, "evt:order", action, order.clone());
     OrderEvent {
         action,
         selling: order.selling.clone(),
