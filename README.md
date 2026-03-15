@@ -1,4 +1,4 @@
-# `axis-orderbook`
+# `@axis-markets/orderbook`
 
 > Stellar smart contract for AXIS limit orderbook DEX.
 
@@ -154,3 +154,20 @@ Action: one of `"created"`|`"updated"`|`"removed"`
 
 Topics: `["AXIS", "trade", selling: Address, buying: Address]`  
 Body: `Trade`
+
+
+## Deployment and TS Bindings
+
+Build a contract
+
+```shell
+stellar contract build --optimize
+```
+
+Deploy it to the network, obtain contract ID.
+
+And create TS bindings
+
+```shell
+stellar contract bindings typescript --output-dir ./bindings --contract-id {contract_id} --overwrite --network-passphrase "Test SDF Network ; September 2015" --rpc-url https://soroban-testnet.stellar.org
+```
