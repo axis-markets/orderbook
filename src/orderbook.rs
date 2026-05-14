@@ -131,17 +131,17 @@ pub(crate) fn cross_orders(
 }
 
 pub(crate) fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
-    if bought_from_order == order.amount {
-        //executed in full - remove from orderbook
-        remove_order(e, &order);
-        return;
-    }
     if bought_from_order > order.amount {
         //attempt to sell more than planned
         e.panic_with_error(OrderbookError::InvalidMatch);
     }
     //executed partially, adjust amount
     order.amount -= bought_from_order;
+    if bought_from_order == order.amount {
+        //executed in full - remove from orderbook
+        remove_order(e, &order);
+        return;
+    }
     //update in orderbook
     update_order(e, &order);
 }
