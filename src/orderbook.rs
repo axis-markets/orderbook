@@ -14,7 +14,7 @@ pub(crate) fn invert_price(e: &Env, price: i128) -> i128 {
     res
 }
 
-pub(crate) fn execute_orders(
+pub(crate) fn sell_to_orders(
     e: &Env,
     taker: &Address,
     amount: i128,
@@ -31,23 +31,13 @@ pub(crate) fn execute_orders(
     let mut amount_left = amount;
 
     for maker_order_id in orders.iter() {
-        //load order from storage
-        let fetched_maker_order = load_order(e, &maker_order_id);
-        //skip not found orders
-        if fetched_maker_order.is_none() {
+        let order = match load_maker_for_match(e, maker_order_id, selling, buying, now) {
+            Some(o) => o,
+            None => continue,
+        };
+        //skip orders priced worse than requested
+        if order.price > max_exec_price {
             continue;
-        }
-        let order = fetched_maker_order.unwrap();
-        //make sure that we are trading correct tokens
-        if &order.selling != buying || &order.buying != selling {
-            e.panic_with_error(OrderbookError::InvalidMatch)
-        }
-        //skip orders with price worse than requested or expired
-        if order.price > max_exec_price
-            || order.amount <= 0
-            || (order.expires > 0 && order.expires < now)
-        {
-            continue; //TODO: for buy orders the condition will be order.price < max_exec_price
         }
         //calculate maximum amount that can be bought at this price
         let mut bought = order.price * amount_left / PRECISION;
@@ -86,13 +76,64 @@ pub(crate) fn execute_orders(
             break;
         }
     }
-    if total_sold < 0
-        || total_bought < 0
-        || (total_sold == 0 && total_bought != 0)
-        || (total_sold != 0 && total_bought == 0)
-    {
-        e.panic_with_error(OrderbookError::InvalidMatch);
+    validate_match_totals(e, total_sold, total_bought);
+    (total_sold, total_bought)
+}
+
+pub(crate) fn buy_from_orders(
+    e: &Env,
+    taker: &Address,
+    buy_amount: i128,
+    buying: &Address,
+    selling: &Address,
+    max_price: i128,
+    orders: Vec<u64>,
+    dispatcher: &mut Dispatcher,
+) -> (i128, i128) {
+    let now = e.ledger().timestamp();
+    let mut total_bought = 0i128;
+    let mut total_sold = 0i128;
+    let mut buy_left = buy_amount;
+
+    for maker_order_id in orders.iter() {
+        let order = match load_maker_for_match(e, maker_order_id, selling, buying, now) {
+            Some(o) => o,
+            None => continue,
+        };
+        //skip orders priced higher than the buyer is willing to pay
+        //both order.price and max_price are in user.selling-per-user.buying units
+        if order.price > max_price {
+            continue;
+        }
+        //buy at most what's left to acquire, capped by the order's available amount
+        let bought = if buy_left < order.amount {
+            buy_left
+        } else {
+            order.amount
+        };
+        //cost in user.selling tokens
+        let sold = order.price * bought / PRECISION;
+        if sold <= 0 {
+            continue; //cannot execute the order
+        }
+        //schedule settlement and emit trade event
+        trade_with_order(&e, &order, &taker, bought, sold, dispatcher);
+        //update maker order amount
+        dispatcher.add_order_changes(order, bought);
+        //accumulate
+        total_bought += bought;
+        total_sold += sold;
+        buy_left -= bought;
+        //check overflows
+        if buy_left < 0 {
+            e.panic_with_error(OrderbookError::Overflow);
+        }
+        //stop iterating if buy target reached
+        if buy_left == 0 {
+            break;
+        }
     }
+    validate_match_totals(e, total_sold, total_bought);
     (total_sold, total_bought)
 }
 
@@ -110,7 +151,7 @@ pub(crate) fn cross_orders(
     }
     let taker_order = fetched_taker_order.unwrap();
     //try to fill the order
-    let (sold, bought) = execute_orders(
+    let (sold, bought) = sell_to_orders(
         &e,
         &trader,
         taker_order.amount,
@@ -135,15 +176,48 @@ pub(crate) fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i
         //attempt to sell more than planned
         e.panic_with_error(OrderbookError::InvalidMatch);
     }
-    //executed partially, adjust amount
+    //adjust remaining amount
     order.amount -= bought_from_order;
-    if bought_from_order == order.amount {
+    if order.amount == 0 {
         //executed in full - remove from orderbook
         remove_order(e, &order);
         return;
     }
     //update in orderbook
     update_order(e, &order);
+}
+
+/// Load a maker order and pre-validate it for matching.
+/// Returns None when the order is missing, has no remaining amount, or has expired.
+/// Panics with InvalidMatch when the asset pair does not align with the taker.
+fn load_maker_for_match(
+    e: &Env,
+    maker_order_id: u64,
+    taker_selling: &Address,
+    taker_buying: &Address,
+    now: u64,
+) -> Option<Order> {
+    let fetched = load_order(e, &maker_order_id)?;
+    //make sure that we are trading correct tokens
+    if &fetched.selling != taker_buying || &fetched.buying != taker_selling {
+        e.panic_with_error(OrderbookError::InvalidMatch);
+    }
+    //skip orders with no remaining amount or expired
+    if fetched.amount <= 0 || (fetched.expires > 0 && fetched.expires <= now) {
+        return None;
+    }
+    Some(fetched)
+}
+
+/// Final invariant check applied after a matching loop.
+fn validate_match_totals(e: &Env, total_sold: i128, total_bought: i128) {
+    if total_sold < 0
+        || total_bought < 0
+        || (total_sold == 0 && total_bought != 0)
+        || (total_sold != 0 && total_bought == 0)
+    {
+        e.panic_with_error(OrderbookError::InvalidMatch);
+    }
 }
 
 fn trade_with_order(

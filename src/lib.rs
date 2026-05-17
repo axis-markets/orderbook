@@ -14,6 +14,7 @@ use crate::errors::OrderbookError;
 use crate::ttl::bump_instance;
 use crate::utils::shorten;
 use order::{Order, OrderKind};
+use orderbook::{invert_price, PRECISION};
 use soroban_sdk::{contract, contractimpl, log, Address, Env, Vec};
 
 #[contract]
@@ -84,8 +85,6 @@ impl Axis {
         trader.require_auth();
         //keep contract alive
         bump_instance(&e);
-        // TODO: check deposit min amount in buy_limit
-        //let deposit: i128 = amount * max_price / PRECISION;
         let axis = e.current_contract_address();
         let mut sold = 0;
         let mut bought = 0;
@@ -93,7 +92,7 @@ impl Axis {
         let mut dispatcher = Dispatcher::new(&e);
         //execute orders if list was provided
         if orders.len() > 0 {
-            (sold, bought) = orderbook::execute_orders(
+            (sold, bought) = orderbook::sell_to_orders(
                 &e,
                 &trader,
                 amount,
@@ -148,6 +147,110 @@ impl Axis {
         (sold, bought, orderid)
     }
 
+    /// Trade with DEX and create buy limit order if quote not executed in full
+    ///
+    ///  # Arguments
+    /// * `kind` - Order type (limit, fill, fill-or-kill)
+    /// * `trader` - Trader address
+    /// * `amount` - Amount of tokens to buy
+    /// * `buying` - Buying token address (what the trader receives)
+    /// * `selling` - Selling token address (what the trader pays with)
+    /// * `price` - Maximum price (selling tokens per 1 buying token, PRECISION fixed-point) the trader is willing to pay
+    /// * `orders` - Optional list of order IDs to match before creating the order on-chain
+    ///
+    /// # Returns
+    ///
+    /// * Amount of sold tokens
+    /// * Amount of bought tokens
+    /// * ID of the newly created order if any
+    ///
+    /// # Panics
+    ///
+    /// If the trader has insufficient balance
+    /// If any of the orders provided do not match selling/buying asset
+    /// If the trade causes an overflow
+    pub fn buy(
+        e: Env,
+        kind: OrderKind,
+        trader: Address,
+        amount: i128,
+        buying: Address,
+        selling: Address,
+        price: i128,
+        orders: Vec<u64>,
+    ) -> (i128, i128, u64) {
+        //need permission from the trader
+        trader.require_auth();
+        //keep contract alive
+        bump_instance(&e);
+        let axis = e.current_contract_address();
+        let mut sold = 0;
+        let mut bought = 0;
+
+        let mut dispatcher = Dispatcher::new(&e);
+        //execute orders if list was provided
+        if orders.len() > 0 {
+            (sold, bought) = orderbook::buy_from_orders(
+                &e,
+                &trader,
+                amount,
+                &buying,
+                &selling,
+                price,
+                orders,
+                &mut dispatcher,
+            );
+        }
+
+        //FillOrKill does not allow partial execution
+        if kind == OrderKind::FillOrKill && bought < amount {
+            return (0, 0, 0);
+        }
+
+        //return if executed in full or partial execution requested
+        if bought == amount || kind == OrderKind::Fill {
+            //settle all payments
+            dispatcher.settle();
+            return (sold, bought, 0);
+        }
+        //not executed in full, need to create limit order for the remaining buy amount
+        let remaining_buy = amount - bought;
+        //worst-case deposit covering the remaining buy amount at the max price
+        let order_deposit = remaining_buy * price / PRECISION;
+        //deposit selling tokens to contract to fund future fills
+        dispatcher.add_transfer(&trader, &axis, &selling, order_deposit);
+
+        //store the remainder as a sell-equivalent order: the buyer offers `order_deposit`
+        //of `selling` tokens at price `invert(price)` (buying per selling)
+        let internal_price = invert_price(&e, price);
+
+        //add new order to orderbook
+        log!(
+            &e,
+            "create order",
+            shorten(&trader),
+            shorten(&selling),
+            shorten(&buying),
+            order_deposit,
+            internal_price
+        );
+
+        let orderid = order::create_order(
+            &e,
+            OrderKind::Limit,
+            trader,
+            order_deposit,
+            selling,
+            buying,
+            internal_price,
+        );
+
+        //settle all payments
+        dispatcher.settle();
+        //return selling/buying amounts and new order ID
+        (sold, bought, orderid)
+    }
+
     /// Cancel existing order
     ///
     /// # Arguments
@@ -163,6 +266,8 @@ impl Axis {
     ///
     /// If trader is not the owner of the order
     pub fn cancel(e: Env, id: u64, trader: Address) {
+        //TODO: add "replace" function that cancels an active order and creates a new one atomically
+        //TODO: allow canceling more than one order at a time
         trader.require_auth();
         bump_instance(&e);
         //fetch order from the book
