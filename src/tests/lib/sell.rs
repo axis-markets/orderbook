@@ -1,5 +1,5 @@
 use super::setup::{fake_asset, setup_test};
-use crate::order::OrderKind;
+use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::testutils::{Address as _};
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
@@ -19,7 +19,8 @@ fn test_sell_limit_creates_order() {
     // Create sell limit order
     let amount = 1000;
     // Create sell limit order
-    let (sold, bought, order_id) = client.sell(
+    let (sold, bought, order_id) = client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &trader,
         &amount,
@@ -59,7 +60,8 @@ fn test_sell_limit_insufficient_balance() {
     usd_client.mint(&trader, &100);
 
     // Try to create order for more than balance - should panic
-    client.sell(
+    client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &trader,
         &1000,
@@ -71,7 +73,7 @@ fn test_sell_limit_insufficient_balance() {
 }
 
 #[test]
-#[should_panic(expected = "\"contract call failed\", sell")]
+#[should_panic(expected = "\"contract call failed\", trade")]
 fn test_sell_limit_requires_auth() {
     let e = Env::default();
     // Don't mock auth
@@ -88,7 +90,8 @@ fn test_sell_limit_requires_auth() {
     usd_client.mock_all_auths().mint(&trader, &10000);
 
     // This should panic because trader auth is not provided
-    client.sell(
+    client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &trader,
         &1000,
@@ -124,7 +127,8 @@ fn test_sell_fill(
     eur_client.mint(&taker, &10000);
 
     // Create a large order
-    let (_, _, order_id) = client.sell(
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &maker,
         &1000,
@@ -135,7 +139,8 @@ fn test_sell_fill(
     );
 
     // Attempt to partially fill it - Fill-or-Kill, failed trade
-    let (sold, bought, created_order) = client.sell(
+    let (sold, bought, created_order) = client.trade(
+        &TradeDirection::Sell,
         &kind,
         &taker,
         &amount,

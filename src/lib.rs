@@ -13,7 +13,7 @@ use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
 use crate::ttl::bump_instance;
 use crate::utils::shorten;
-use order::{Order, OrderKind};
+use order::{Order, OrderKind, TradeDirection};
 use orderbook::{invert_price, PRECISION};
 use soroban_sdk::{contract, contractimpl, log, Address, Env, Vec};
 
@@ -49,30 +49,32 @@ impl Axis {
         order::load_order(&e, &id)
     }
 
-    /// Trade with DEX and create sell limit order if quote not executed in full
+    /// Trade with DEX and create a limit order if the quote was not executed in full.
     ///
     ///  # Arguments
-    /// * `kind` - Order type (limit, fill, fill-or-kill)
+    /// * `direction` - Trade direction: `Sell` or `Buy`
+    /// * `kind` - Order type (`Limit`, `Fill`, `FillOrKill`)
     /// * `trader` - Trader address
-    /// * `amount` - Amount of tokens to sell
-    /// * `selling` - Selling token address
-    /// * `buying` - Buying token address
-    /// * `price` - Price the trader willing to accept
+    /// * `amount` - Amount of `selling` tokens to send for `Sell` orders or target amount of `buying` tokens to acquire for `Buy` orders
+    /// * `selling` - Token address sent by trader
+    /// * `buying` - Token address received by trader
+    /// * `price` - Price limit: minimum `buying` per 1 `selling` for `Sell` orders or maximum `selling` per 1 `buying` for `Buy` orders
     /// * `orders` - Optional list of order IDs to match before creating the order on-chain
     ///
     /// # Returns
     ///
     /// * Amount of sold tokens
     /// * Amount of bought tokens
-    /// * ID of the newly created order if any
+    /// * ID of the newly created order if any (0 if no order was created)
     ///
     /// # Panics
     ///
     /// If the trader has insufficient balance
     /// If any of the orders provided do not match selling/buying asset
     /// If the trade causes an overflow
-    pub fn sell(
+    pub fn trade(
         e: Env,
+        direction: TradeDirection,
         kind: OrderKind,
         trader: Address,
         amount: i128,
@@ -92,8 +94,9 @@ impl Axis {
         let mut dispatcher = Dispatcher::new(&e);
         //execute orders if list was provided
         if orders.len() > 0 {
-            (sold, bought) = orderbook::sell_to_orders(
+            (sold, bought) = orderbook::match_orders(
                 &e,
+                &direction,
                 &trader,
                 amount,
                 &selling,
@@ -104,19 +107,35 @@ impl Axis {
             );
         }
 
+        //filled amount depends on direction
+        let filled = match direction {
+            TradeDirection::Sell => sold,
+            TradeDirection::Buy => bought,
+        };
+
         //FillOrKill does not allow partial execution
-        if kind == OrderKind::FillOrKill && sold < amount {
+        if kind == OrderKind::FillOrKill && filled < amount {
             return (0, 0, 0);
         }
 
         //return if executed in full or partial execution requested
-        if sold == amount || kind == OrderKind::Fill {
+        if filled == amount || kind == OrderKind::Fill {
             //settle all payments
             dispatcher.settle();
             return (sold, bought, 0);
         }
-        //not executed in full, need to create limit order
-        let order_amount = amount - sold;
+
+        //not executed in full, need to create a limit order for the remainder
+        //orders are always stored in sell-equivalent form
+        let (order_amount, order_price) = match direction {
+            TradeDirection::Sell => (amount - sold, price),
+            TradeDirection::Buy => {
+                //deposit needed to back the remaining buy target at the trader's max price
+                let deposit = (amount - bought) * price / PRECISION;
+                (deposit, invert_price(&e, price))
+            }
+        };
+
         //deposit order tokens to contract
         dispatcher.add_transfer(&trader, &axis, &selling, order_amount);
 
@@ -128,7 +147,7 @@ impl Axis {
             shorten(&selling),
             shorten(&buying),
             order_amount,
-            price
+            order_price
         );
 
         let orderid = order::create_order(
@@ -138,111 +157,7 @@ impl Axis {
             order_amount,
             selling,
             buying,
-            price,
-        );
-
-        //settle all payments
-        dispatcher.settle();
-        //return selling/buying amounts and new order ID
-        (sold, bought, orderid)
-    }
-
-    /// Trade with DEX and create buy limit order if quote not executed in full
-    ///
-    ///  # Arguments
-    /// * `kind` - Order type (limit, fill, fill-or-kill)
-    /// * `trader` - Trader address
-    /// * `amount` - Amount of tokens to buy
-    /// * `buying` - Buying token address (what the trader receives)
-    /// * `selling` - Selling token address (what the trader pays with)
-    /// * `price` - Maximum price (selling tokens per 1 buying token, PRECISION fixed-point) the trader is willing to pay
-    /// * `orders` - Optional list of order IDs to match before creating the order on-chain
-    ///
-    /// # Returns
-    ///
-    /// * Amount of sold tokens
-    /// * Amount of bought tokens
-    /// * ID of the newly created order if any
-    ///
-    /// # Panics
-    ///
-    /// If the trader has insufficient balance
-    /// If any of the orders provided do not match selling/buying asset
-    /// If the trade causes an overflow
-    pub fn buy(
-        e: Env,
-        kind: OrderKind,
-        trader: Address,
-        amount: i128,
-        buying: Address,
-        selling: Address,
-        price: i128,
-        orders: Vec<u64>,
-    ) -> (i128, i128, u64) {
-        //need permission from the trader
-        trader.require_auth();
-        //keep contract alive
-        bump_instance(&e);
-        let axis = e.current_contract_address();
-        let mut sold = 0;
-        let mut bought = 0;
-
-        let mut dispatcher = Dispatcher::new(&e);
-        //execute orders if list was provided
-        if orders.len() > 0 {
-            (sold, bought) = orderbook::buy_from_orders(
-                &e,
-                &trader,
-                amount,
-                &buying,
-                &selling,
-                price,
-                orders,
-                &mut dispatcher,
-            );
-        }
-
-        //FillOrKill does not allow partial execution
-        if kind == OrderKind::FillOrKill && bought < amount {
-            return (0, 0, 0);
-        }
-
-        //return if executed in full or partial execution requested
-        if bought == amount || kind == OrderKind::Fill {
-            //settle all payments
-            dispatcher.settle();
-            return (sold, bought, 0);
-        }
-        //not executed in full, need to create limit order for the remaining buy amount
-        let remaining_buy = amount - bought;
-        //worst-case deposit covering the remaining buy amount at the max price
-        let order_deposit = remaining_buy * price / PRECISION;
-        //deposit selling tokens to contract to fund future fills
-        dispatcher.add_transfer(&trader, &axis, &selling, order_deposit);
-
-        //store the remainder as a sell-equivalent order: the buyer offers `order_deposit`
-        //of `selling` tokens at price `invert(price)` (buying per selling)
-        let internal_price = invert_price(&e, price);
-
-        //add new order to orderbook
-        log!(
-            &e,
-            "create order",
-            shorten(&trader),
-            shorten(&selling),
-            shorten(&buying),
-            order_deposit,
-            internal_price
-        );
-
-        let orderid = order::create_order(
-            &e,
-            OrderKind::Limit,
-            trader,
-            order_deposit,
-            selling,
-            buying,
-            internal_price,
+            order_price,
         );
 
         //settle all payments

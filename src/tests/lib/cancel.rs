@@ -1,5 +1,5 @@
 use super::setup::setup_test;
-use crate::order::OrderKind;
+use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Vec};
@@ -18,7 +18,8 @@ fn test_cancel_success() {
     let amount = 1000;
 
     // Create an order
-    let (_, _, order_id) = client.sell(
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &trader,
         &amount,
@@ -70,11 +71,11 @@ fn test_cancel_multiple_orders() {
     let initial_balance = usd_client.balance(&trader);
 
     // Create multiple orders
-    let (_, _, order1) = client.sell(&OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order1) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
-    let (_, _, order2) = client.sell(&OrderKind::Limit, &trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order2) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
-    let (_, _, order3) = client.sell(&OrderKind::Limit, &trader, &3000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order3) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &3000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Cancel second order
     client.cancel(&order2, &trader);
@@ -107,13 +108,13 @@ fn test_cancel_after_partial_fill() {
     eur_client.mint(&taker, &10000);
 
     // Create a large order
-    let (_, _, order_id) = client.sell(&OrderKind::Limit, &maker, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order_id) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &maker, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Partially fill it
-    client.sell(&OrderKind::Limit, &taker, &300, &eur, &usd, &PRECISION, &Vec::new(&e));
+    client.trade(&TradeDirection::Sell, &OrderKind::Limit, &taker, &300, &eur, &usd, &PRECISION, &Vec::new(&e));
 
     let orders = Vec::from_array(&e, [order_id]);
-    client.sell(&OrderKind::Fill, &taker, &300, &eur, &usd, &PRECISION, &orders);
+    client.trade(&TradeDirection::Sell, &OrderKind::Fill, &taker, &300, &eur, &usd, &PRECISION, &orders);
 
     assert_eq!(usd_client.balance(&maker), 9000);
     // Now cancel the remaining portion
@@ -136,7 +137,7 @@ fn test_cancel_wrong_owner() {
     usd_client.mint(&trader, &10000);
 
     // Create an order
-    let (_, _, order_id) = client.sell(&OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order_id) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
 
     // Try to cancel with different address - should panic
     let other_trader = Address::generate(&e);

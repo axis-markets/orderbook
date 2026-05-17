@@ -1,6 +1,6 @@
 use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
-use crate::order::{load_order, remove_order, update_order, Order};
+use crate::order::{load_order, remove_order, update_order, Order, TradeDirection};
 use crate::trade;
 use soroban_sdk::{Address, Env, Vec};
 
@@ -14,8 +14,13 @@ pub(crate) fn invert_price(e: &Env, price: i128) -> i128 {
     res
 }
 
-pub(crate) fn sell_to_orders(
+/// Match a taker order against a list of maker orders in the orderbook.
+/// `direction` selects taker semantics:
+///   - Sell: `amount` is in `selling` units, `max_price` is min "buying per selling"
+///   - Buy : `amount` is in `buying` units,  `max_price` is max "selling per buying"
+pub(crate) fn match_orders(
     e: &Env,
+    direction: &TradeDirection,
     taker: &Address,
     amount: i128,
     selling: &Address,
@@ -24,11 +29,18 @@ pub(crate) fn sell_to_orders(
     orders: Vec<u64>,
     dispatcher: &mut Dispatcher,
 ) -> (i128, i128) {
-    let max_exec_price = invert_price(&e, max_price);
+    // Price-acceptance threshold compared against `order.price`:
+    //   Sell: orders are priced in "maker.buying per maker.selling" = "taker.selling per taker.buying".
+    //         The taker's max_price is "taker.buying per taker.selling", so invert it.
+    //   Buy : both maker.price and taker.max_price are in "taker.selling per taker.buying" — no invert.
+    let max_exec_price = match direction {
+        TradeDirection::Sell => invert_price(e, max_price),
+        TradeDirection::Buy => max_price,
+    };
     let now = e.ledger().timestamp();
     let mut total_bought = 0i128;
     let mut total_sold = 0i128;
-    let mut amount_left = amount;
+    let mut amount_left = amount; //sell-units for Sell, buy-units for Buy
 
     for maker_order_id in orders.iter() {
         let order = match load_maker_for_match(e, maker_order_id, selling, buying, now) {
@@ -39,24 +51,14 @@ pub(crate) fn sell_to_orders(
         if order.price > max_exec_price {
             continue;
         }
-        //calculate maximum amount that can be bought at this price
-        let mut bought = order.price * amount_left / PRECISION;
-        if bought <= 0 {
-            continue; //cannot execute the order
-        }
-        let mut sold = amount_left;
-
-        if bought >= order.amount {
-            //recalculate how much we can take from the order
-            if bought > order.amount {
-                //set max available amount from the order
-                bought = order.amount;
-                //recalculate sold amount
-                sold = invert_price(e, order.price) * bought / PRECISION;
-                if sold <= 0 {
-                    continue; //cannot execute the order
-                }
-            }
+        //compute per-order trade amounts in taker units
+        let (sold, bought) = match direction {
+            TradeDirection::Sell => sell_amounts_for(e, &order, amount_left),
+            TradeDirection::Buy => buy_amounts_for(&order, amount_left),
+        };
+        //helpers return (0, 0) when this order cannot be executed
+        if sold == 0 || bought == 0 {
+            continue;
         }
         //schedule settlement and emit trade event
         trade_with_order(&e, &order, &taker, bought, sold, dispatcher);
@@ -65,13 +67,15 @@ pub(crate) fn sell_to_orders(
         //accumulate
         total_bought += bought;
         total_sold += sold;
-        amount_left -= sold;
-        //check overflows
+        //decrement remaining work in the direction-appropriate unit
+        amount_left -= match direction {
+            TradeDirection::Sell => sold,
+            TradeDirection::Buy => bought,
+        };
         if amount_left < 0 {
-            //bought more than planned
+            //consumed more than planned
             e.panic_with_error(OrderbookError::Overflow);
         }
-        //stop iterating if fully executed
         if amount_left == 0 {
             break;
         }
@@ -80,61 +84,42 @@ pub(crate) fn sell_to_orders(
     (total_sold, total_bought)
 }
 
-pub(crate) fn buy_from_orders(
-    e: &Env,
-    taker: &Address,
-    buy_amount: i128,
-    buying: &Address,
-    selling: &Address,
-    max_price: i128,
-    orders: Vec<u64>,
-    dispatcher: &mut Dispatcher,
-) -> (i128, i128) {
-    let now = e.ledger().timestamp();
-    let mut total_bought = 0i128;
-    let mut total_sold = 0i128;
-    let mut buy_left = buy_amount;
-
-    for maker_order_id in orders.iter() {
-        let order = match load_maker_for_match(e, maker_order_id, selling, buying, now) {
-            Some(o) => o,
-            None => continue,
-        };
-        //skip orders priced higher than the buyer is willing to pay
-        //both order.price and max_price are in user.selling-per-user.buying units
-        if order.price > max_price {
-            continue;
-        }
-        //buy at most what's left to acquire, capped by the order's available amount
-        let bought = if buy_left < order.amount {
-            buy_left
-        } else {
-            order.amount
-        };
-        //cost in user.selling tokens
-        let sold = order.price * bought / PRECISION;
+/// Sell taker: how much can trader sell to this maker order at its price
+/// Returns (sold, bought) in taker units, or (0, 0) if the order can't be executed
+fn sell_amounts_for(e: &Env, order: &Order, amount_left: i128) -> (i128, i128) {
+    //maximum buying tokens this order yields at its price for the remaining sell amount
+    let mut bought = order.price * amount_left / PRECISION;
+    if bought <= 0 {
+        return (0, 0);
+    }
+    let mut sold = amount_left;
+    //clamp to order's available amount
+    if bought > order.amount {
+        bought = order.amount;
+        //recompute selling amount needed to claim the clamped buy
+        sold = invert_price(e, order.price) * bought / PRECISION;
         if sold <= 0 {
-            continue; //cannot execute the order
-        }
-        //schedule settlement and emit trade event
-        trade_with_order(&e, &order, &taker, bought, sold, dispatcher);
-        //update maker order amount
-        dispatcher.add_order_changes(order, bought);
-        //accumulate
-        total_bought += bought;
-        total_sold += sold;
-        buy_left -= bought;
-        //check overflows
-        if buy_left < 0 {
-            e.panic_with_error(OrderbookError::Overflow);
-        }
-        //stop iterating if buy target reached
-        if buy_left == 0 {
-            break;
+            return (0, 0);
         }
     }
-    validate_match_totals(e, total_sold, total_bought);
-    (total_sold, total_bought)
+    (sold, bought)
+}
+
+/// Buy taker: how much can trader buy from this maker order
+/// Returns (sold, bought) in taker units, or (0, 0) if the order can't be executed
+fn buy_amounts_for(order: &Order, buy_left: i128) -> (i128, i128) {
+    //buy at most what's left, capped by the maker's available amount
+    let bought = if buy_left < order.amount {
+        buy_left
+    } else {
+        order.amount
+    };
+    //cost in taker.selling tokens at the maker's price
+    let sold = order.price * bought / PRECISION;
+    if sold <= 0 {
+        return (0, 0);
+    }
+    (sold, bought)
 }
 
 pub(crate) fn cross_orders(
@@ -150,9 +135,10 @@ pub(crate) fn cross_orders(
         e.panic_with_error(OrderbookError::OrderNotFound);
     }
     let taker_order = fetched_taker_order.unwrap();
-    //try to fill the order
-    let (sold, bought) = sell_to_orders(
+    //on-book orders are sell-equivalent, so cross from the sell side
+    let (sold, bought) = match_orders(
         &e,
+        &TradeDirection::Sell,
         &trader,
         taker_order.amount,
         &taker_order.selling,

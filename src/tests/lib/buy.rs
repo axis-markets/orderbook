@@ -1,5 +1,5 @@
 use super::setup::{fake_asset, setup_test};
-use crate::order::OrderKind;
+use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
@@ -18,12 +18,13 @@ fn test_buy_limit_creates_order() {
     let initial_balance = eur_client.balance(&trader);
     let amount = 1000;
     // Create buy limit order
-    let (sold, bought, order_id) = client.buy(
+    let (sold, bought, order_id) = client.trade(
+        &TradeDirection::Buy,
         &OrderKind::Limit,
         &trader,
         &amount,
-        &usd,
         &eur,
+        &usd,
         &PRECISION,
         &Vec::new(&e),
     );
@@ -63,19 +64,20 @@ fn test_buy_limit_insufficient_balance() {
     let eur_client = StellarAssetClient::new(&e, &eur);
     eur_client.mint(&trader, &100);
 
-    client.buy(
+    client.trade(
+        &TradeDirection::Buy,
         &OrderKind::Limit,
         &trader,
         &1000,
-        &usd,
         &eur,
+        &usd,
         &PRECISION,
         &Vec::new(&e),
     );
 }
 
 #[test]
-#[should_panic(expected = "\"contract call failed\", buy")]
+#[should_panic(expected = "\"contract call failed\", trade")]
 fn test_buy_limit_requires_auth() {
     let e = Env::default();
     // Do NOT mock auth
@@ -91,12 +93,13 @@ fn test_buy_limit_requires_auth() {
     eur_client.mock_all_auths().mint(&trader, &10000);
 
     // Trader auth not provided -> should panic
-    client.buy(
+    client.trade(
+        &TradeDirection::Buy,
         &OrderKind::Limit,
         &trader,
         &1000,
-        &usd,
         &eur,
+        &usd,
         &PRECISION,
         &Vec::new(&e),
     );
@@ -129,7 +132,8 @@ fn test_buy_fill(
     eur_client.mint(&taker, &10000);
 
     // Maker creates a sell order: 1000 USD at price PRECISION (= 1 EUR per USD)
-    let (_, _, order_id) = client.sell(
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &maker,
         &1000,
@@ -140,12 +144,13 @@ fn test_buy_fill(
     );
 
     // Taker tries to buy `amount` USD with EUR at max price = price_multiplier * PRECISION
-    let (sold, bought, created_order) = client.buy(
+    let (sold, bought, created_order) = client.trade(
+        &TradeDirection::Buy,
         &kind,
         &taker,
         &amount,
-        &usd,
         &eur,
+        &usd,
         &(price_multiplier * PRECISION),
         &Vec::from_array(&e, [order_id]),
     );
@@ -179,7 +184,8 @@ fn test_buy_full_fill_refund() {
     eur_client.mint(&buyer, &10000);
 
     // Maker: sell 1000 USD at price PRECISION (1 EUR/USD)
-    let (_, _, order_id) = client.sell(
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &maker,
         &1000,
@@ -190,12 +196,13 @@ fn test_buy_full_fill_refund() {
     );
 
     // Buyer: buy 500 USD at max 2 EUR/USD
-    let (sold, bought, created_order) = client.buy(
+    let (sold, bought, created_order) = client.trade(
+        &TradeDirection::Buy,
         &OrderKind::Fill,
         &buyer,
         &500,
-        &usd,
         &eur,
+        &usd,
         &(2 * PRECISION),
         &Vec::from_array(&e, [order_id]),
     );
@@ -232,7 +239,8 @@ fn test_buy_partial_creates_remainder() {
     eur_client.mint(&buyer, &10000);
 
     // Maker: sell only 300 USD at price PRECISION
-    let (_, _, maker_order_id) = client.sell(
+    let (_, _, maker_order_id) = client.trade(
+        &TradeDirection::Sell,
         &OrderKind::Limit,
         &maker,
         &300,
@@ -243,12 +251,13 @@ fn test_buy_partial_creates_remainder() {
     );
 
     // Buyer wants 500 USD at max 1 EUR/USD, Limit kind
-    let (sold, bought, remainder_id) = client.buy(
+    let (sold, bought, remainder_id) = client.trade(
+        &TradeDirection::Buy,
         &OrderKind::Limit,
         &buyer,
         &500,
-        &usd,
         &eur,
+        &usd,
         &PRECISION,
         &Vec::from_array(&e, [maker_order_id]),
     );

@@ -23,49 +23,26 @@ Returns
 
 ---
 
-`fn sell(kind: OrderKind, trader: Address, amount: i128, selling: Address, buying: Address, price: i128, orders: Vec<u64>) -> (i128, i128, u64)`
-Trade with DEX using one of the supported order types
+`fn trade(direction: TradeDirection, kind: OrderKind, trader: Address, amount: i128, selling: Address, buying: Address, price: i128, orders: Vec<u64>) -> (i128, i128, u64)`
+Trade with DEX and create a limit order if the quote was not executed in full.
 
 Arguments
-- `kind` - Order type: `Limit` (create order if not filled), `Fill` (fill only, no order created), `FillOrKill` (cancel if not fully filled)
+- `direction` - Trade direction: `Sell` or `Buy`
+- `kind` - Order type (`Limit`, `Fill`, `FillOrKill`)
 - `trader` - Trader address
-- `amount` - Amount of tokens to sell
-- `selling` - Selling token address
-- `buying` - Buying token address
-- `price` - Price the trader willing to accept
+- `amount` - Amount of `selling` tokens to send for `Sell` orders or target amount of `buying` tokens to acquire for `Buy` orders
+- `selling` - Token address sent by trader
+- `buying` - Token address received by trader
+- `price` - Price limit: minimum `buying` per 1 `selling` for `Sell` orders or maximum `selling` per 1 `buying` for `Buy` orders
 - `orders` - Optional list of order IDs to match before creating the order on-chain
 
 Returns
-- Amount of sold tokens
-- Amount of bought tokens
+- Amount of sold tokens (actual selling-side spent)
+- Amount of bought tokens (actual buying-side acquired)
 - ID of the newly created order (0 if no order was created)
 
 Panics
 - If the trader has insufficient balance
-- If any of the orders provided do not match selling/buying asset
-- If the trade causes an overflow
-
----
-
-`fn buy(kind: OrderKind, trader: Address, amount: i128, buying: Address, selling: Address, price: i128, orders: Vec<u64>) -> (i128, i128, u64)`
-Trade with DEX using one of the supported order types — buy-side variant. Matches against existing sell orders, terminating when the target buy amount is reached. Any unused worst-case deposit stays in the trader's wallet (immediate fills route selling tokens directly trader → maker, debited only for the amount actually consumed).
-
-Arguments
-- `kind` - Order type: `Limit` (create order if not filled), `Fill` (fill only, no order created), `FillOrKill` (cancel if not fully filled)
-- `trader` - Trader address
-- `amount` - Amount of buying tokens to acquire
-- `buying` - Token to acquire
-- `selling` - Token used to pay
-- `price` - Maximum price (selling tokens per 1 buying token, PRECISION fixed-point) the trader is willing to pay
-- `orders` - Optional list of order IDs to match before creating the order on-chain
-
-Returns
-- Amount of sold tokens (selling-side, actual spent)
-- Amount of bought tokens (buying-side, acquired)
-- ID of the newly created order (0 if no order was created)
-
-Panics
-- If the trader has insufficient balance to cover the worst-case deposit
 - If any of the orders provided do not match selling/buying asset
 - If the trade causes an overflow
 
@@ -107,6 +84,11 @@ enum OrderKind {
     Limit = 1,
     Fill = 2,
     FillOrKill = 3,
+}
+
+enum TradeDirection {
+    Sell = 1,
+    Buy = 2,
 }
 
 struct Order {
