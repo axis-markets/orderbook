@@ -166,37 +166,32 @@ impl Axis {
         (sold, bought, orderid)
     }
 
-    /// Cancel existing order
+    /// Cancel existing orders
     ///
     /// # Arguments
     ///
-    /// * `id` - ID of the order to cancel
+    /// * `ids` - IDs of the orders to cancel
     /// * `trader` - Trader address
-    ///
-    /// # Returns
-    ///
-    /// Order fetched from the storage
     ///
     /// # Panics
     ///
-    /// If trader is not the owner of the order
-    pub fn cancel(e: Env, id: u64, trader: Address) {
+    /// If `trader` is not the owner of any existing order in `ids`
+    pub fn cancel(e: Env, ids: Vec<u64>, trader: Address) {
         //TODO: add "replace" function that cancels an active order and creates a new one atomically
-        //TODO: allow canceling more than one order at a time
         trader.require_auth();
         bump_instance(&e);
-        //fetch order from the book
-        let order = order::load_order(&e, &id);
-        //only if it still exists
-        if !order.is_none() {
-            let order_to_remove = order.unwrap();
+        let mut dispatcher = Dispatcher::new(&e);
+        for id in ids.iter() {
+            let order_to_remove = match order::load_order(&e, &id) {
+                Some(o) => o,
+                None => continue, //silently skip non-existent orders
+            };
             //only owner can cancel
             if order_to_remove.owner != trader {
                 e.panic_with_error(OrderbookError::NotAuthorized)
             }
-            //return unsold tokens to the trader
-            Dispatcher::transfer(
-                &e,
+            //schedule batched return of unsold tokens to the trader
+            dispatcher.add_transfer(
                 &e.current_contract_address(),
                 &trader,
                 &order_to_remove.selling,
@@ -205,6 +200,7 @@ impl Axis {
             //remove order from the book
             order::remove_order(&e, &order_to_remove);
         }
+        dispatcher.settle();
     }
 
     /// Fill existing orders using another matching order from the orderbook

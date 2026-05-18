@@ -51,5 +51,5 @@ pub(crate) fn emit_order_event(e: &Env, action: Symbol, order: Order) {
         buying: order.buying.clone(),
         order,
     }
-    .publish(e); //TODO: consider adding owner to topics
+    .publish(e);
 }
