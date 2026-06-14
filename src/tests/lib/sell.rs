@@ -160,3 +160,108 @@ fn test_sell_fill(
     assert_eq!(usd_client.balance(&taker), bought);
     assert_eq!(eur_client.balance(&taker), 10000 - sold);
 }
+
+#[test]
+fn test_sell_at_non_unit_price() {
+    // Maker sells USD wanting 2 EUR per USD; taker sells EUR to buy USD.
+    // Selling 100 EUR at 2 EUR/USD must yield 50 USD (a price-inverted impl would yield 200).
+    let (e, maker, _, usd, eur) = setup_test();
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
+
+    let taker = Address::generate(&e);
+    let usd_client = StellarAssetClient::new(&e, &usd);
+    let eur_client = StellarAssetClient::new(&e, &eur);
+
+    usd_client.mint(&maker, &10000);
+    eur_client.mint(&taker, &10000);
+
+    // Maker: sell 1000 USD at price 2*PRECISION (2 EUR per USD)
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &maker,
+        &1000,
+        &usd,
+        &eur,
+        &(2 * PRECISION),
+        &Vec::new(&e),
+    );
+
+    // Taker: sell 100 EUR to buy USD, accepting down to 0.5 USD per EUR (max_price = PRECISION/2)
+    let (sold, bought, created_order) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Fill,
+        &taker,
+        &100,
+        &eur,
+        &usd,
+        &(PRECISION / 2),
+        &Vec::from_array(&e, [order_id]),
+    );
+
+    // 100 EUR at 2 EUR/USD buys 50 USD
+    assert_eq!(sold, 100);
+    assert_eq!(bought, 50);
+    assert_eq!(created_order, 0);
+
+    // Maker order partially consumed: 1000 - 50 = 950 USD remaining
+    let remaining = client.order(&order_id).unwrap();
+    assert_eq!(remaining.amount, 950);
+
+    assert_eq!(usd_client.balance(&maker), 9000); // deposited 1000 USD up front
+    assert_eq!(eur_client.balance(&maker), 100);
+    assert_eq!(usd_client.balance(&taker), 50);
+    assert_eq!(eur_client.balance(&taker), 9900);
+}
+
+#[test]
+fn test_sell_at_non_unit_price_clamped() {
+    // Maker offers only 100 USD at 2 EUR/USD; taker tries to sell 1000 EUR.
+    // The order caps the fill: taker sells 200 EUR to claim the maker's 100 USD.
+    let (e, maker, _, usd, eur) = setup_test();
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
+
+    let taker = Address::generate(&e);
+    let usd_client = StellarAssetClient::new(&e, &usd);
+    let eur_client = StellarAssetClient::new(&e, &eur);
+
+    usd_client.mint(&maker, &10000);
+    eur_client.mint(&taker, &10000);
+
+    // Maker: sell only 100 USD at price 2*PRECISION
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &maker,
+        &100,
+        &usd,
+        &eur,
+        &(2 * PRECISION),
+        &Vec::new(&e),
+    );
+
+    // Taker: sell 1000 EUR to buy USD (more than the order can supply)
+    let (sold, bought, _) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Fill,
+        &taker,
+        &1000,
+        &eur,
+        &usd,
+        &(PRECISION / 2),
+        &Vec::from_array(&e, [order_id]),
+    );
+
+    // Order holds only 100 USD; acquiring it costs 200 EUR
+    assert_eq!(sold, 200);
+    assert_eq!(bought, 100);
+
+    // Maker order fully consumed -> removed from the book
+    assert!(client.order(&order_id).is_none());
+
+    assert_eq!(eur_client.balance(&maker), 200);
+    assert_eq!(usd_client.balance(&taker), 100);
+    assert_eq!(eur_client.balance(&taker), 9800);
+}

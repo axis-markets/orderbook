@@ -288,3 +288,57 @@ fn test_buy_partial_creates_remainder() {
     // Contract holds the 200 EUR deposit for the remainder buy order
     assert_eq!(eur_client.balance(&contract_address), 200);
 }
+
+#[test]
+fn test_buy_at_non_unit_price() {
+    // Maker sells USD wanting 2 EUR per USD; buyer buys 100 USD and must pay 200 EUR.
+    // Confirms buy_amounts_for stays correct at a non-1:1 price.
+    let (e, maker, _, usd, eur) = setup_test();
+    let contract_address = e.register(Axis, ());
+    let client = AxisClient::new(&e, &contract_address);
+
+    let buyer = Address::generate(&e);
+    let usd_client = StellarAssetClient::new(&e, &usd);
+    let eur_client = StellarAssetClient::new(&e, &eur);
+
+    usd_client.mint(&maker, &10000);
+    eur_client.mint(&buyer, &10000);
+
+    // Maker: sell 1000 USD at price 2*PRECISION (2 EUR per USD)
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &maker,
+        &1000,
+        &usd,
+        &eur,
+        &(2 * PRECISION),
+        &Vec::new(&e),
+    );
+
+    // Buyer: buy 100 USD at max 2 EUR/USD
+    let (sold, bought, created_order) = client.trade(
+        &TradeDirection::Buy,
+        &OrderKind::Fill,
+        &buyer,
+        &100,
+        &eur,
+        &usd,
+        &(2 * PRECISION),
+        &Vec::from_array(&e, [order_id]),
+    );
+
+    // 100 USD at 2 EUR/USD costs 200 EUR
+    assert_eq!(sold, 200);
+    assert_eq!(bought, 100);
+    assert_eq!(created_order, 0);
+
+    // Maker order partially consumed: 1000 - 100 = 900 USD remaining
+    let remaining = client.order(&order_id).unwrap();
+    assert_eq!(remaining.amount, 900);
+
+    assert_eq!(usd_client.balance(&buyer), 100);
+    assert_eq!(eur_client.balance(&buyer), 9800);
+    assert_eq!(eur_client.balance(&maker), 200);
+    assert_eq!(usd_client.balance(&maker), 9000);
+}

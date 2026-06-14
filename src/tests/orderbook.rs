@@ -52,7 +52,7 @@ fn test_fill(
     usd_asset_client.mint(&trader, &10000000000000000);
     eur_asset_client.mint(&trader, &10000000000000000);
 
-    let price = PRECISION * d / n;
+    let price = PRECISION * n / d;
 
     let contract_address = e.register(Axis, ());
     let orderbook_client = AxisClient::new(&e, &contract_address);

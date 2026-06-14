@@ -15,7 +15,7 @@ pub(crate) fn invert_price(e: &Env, price: i128) -> i128 {
 }
 
 /// Match a taker order against a list of maker orders in the orderbook.
-/// `direction` selects taker semantics:
+/// Depending on `direction`:
 ///   - Sell: `amount` is in `selling` units, `max_price` is min "buying per selling"
 ///   - Buy : `amount` is in `buying` units,  `max_price` is max "selling per buying"
 pub(crate) fn match_orders(
@@ -84,11 +84,15 @@ pub(crate) fn match_orders(
     (total_sold, total_bought)
 }
 
-/// Sell taker: how much can trader sell to this maker order at its price
-/// Returns (sold, bought) in taker units, or (0, 0) if the order can't be executed
+/// How much can trader sell to this order at its price
+/// Returns (sold, bought) or (0, 0) if the trade can't be executed
 fn sell_amounts_for(e: &Env, order: &Order, amount_left: i128) -> (i128, i128) {
-    //maximum buying tokens this order yields at its price for the remaining sell amount
-    let mut bought = order.price * amount_left / PRECISION;
+    //invert_price would divide by zero
+    if order.price <= 0 {
+        return (0, 0);
+    }
+    //maximum buying tokens this order yields for the remaining sell amount at its price
+    let mut bought = invert_price(e, order.price) * amount_left / PRECISION;
     if bought <= 0 {
         return (0, 0);
     }
@@ -97,7 +101,7 @@ fn sell_amounts_for(e: &Env, order: &Order, amount_left: i128) -> (i128, i128) {
     if bought > order.amount {
         bought = order.amount;
         //recompute selling amount needed to claim the clamped buy
-        sold = invert_price(e, order.price) * bought / PRECISION;
+        sold = order.price * bought / PRECISION;
         if sold <= 0 {
             return (0, 0);
         }
@@ -105,8 +109,8 @@ fn sell_amounts_for(e: &Env, order: &Order, amount_left: i128) -> (i128, i128) {
     (sold, bought)
 }
 
-/// Buy taker: how much can trader buy from this maker order
-/// Returns (sold, bought) in taker units, or (0, 0) if the order can't be executed
+/// How much can trader buy from this order
+/// Returns (sold, bought) or (0, 0) if the trade can't be executed
 fn buy_amounts_for(order: &Order, buy_left: i128) -> (i128, i128) {
     //buy at most what's left, capped by the maker's available amount
     let bought = if buy_left < order.amount {
