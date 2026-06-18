@@ -16,6 +16,23 @@ pub struct TradeEvent {
     pub trade: Trade,
 }
 
+#[contractevent(topics = ["AXIS", "swap"], data_format = "map")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapEvent {
+    /// Asset sold by the trader
+    #[topic]
+    pub selling: Address,
+    /// Asset received by the trader
+    #[topic]
+    pub buying: Address,
+    /// Trader account address
+    pub trader: Address,
+    /// Amount of `selling` tokens sold
+    pub sold: i128,
+    /// Amount of `buying` tokens received
+    pub bought: i128,
+}
+
 #[contractevent(topics = ["AXIS", "order"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrderEvent {
@@ -39,6 +56,25 @@ pub(crate) fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trad
         selling,
         buying,
         trade,
+    }
+    .publish(e);
+}
+
+pub(crate) fn emit_swap(
+    e: &Env,
+    trader: Address,
+    selling: Address,
+    buying: Address,
+    sold: i128,
+    bought: i128,
+) {
+    log!(e, "evt:swap", sold, bought);
+    SwapEvent {
+        selling,
+        buying,
+        trader,
+        sold,
+        bought,
     }
     .publish(e);
 }

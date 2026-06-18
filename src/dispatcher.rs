@@ -26,6 +26,10 @@ impl Dispatcher {
         if amount < 0 {
             e.panic_with_error(OrderbookError::Overflow);
         }
+        //a self-transfer never changes balances
+        if from == to {
+            return;
+        }
         log!(
             &e,
             "scheduled transfer",
@@ -78,6 +82,8 @@ impl Dispatcher {
         }
         //emit trades
         for trade in self.trades.iter(){
+            let mut trade = trade;
+            trade.id = crate::trade::next_trade_id(&e);
             emit_trade(&e, trade.buying.clone(), trade.selling.clone(), trade);
         }
         //apply order changes

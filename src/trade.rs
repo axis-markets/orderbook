@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 const LAST_TRADE_ID: &str = "lt";
 
@@ -23,6 +23,17 @@ pub struct Trade {
     /// Bought tokens amount
     pub bought: i128,
 }
+
+/// A trade step in a multi-market swap path.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TradeStep {
+    /// Asset to buy at this step
+    pub asset: Address,
+    /// Maker order IDs to match
+    pub orders: Vec<u64>,
+}
+
 
 pub(crate) fn get_last_trade_id(e: &Env) -> u64 {
     e.storage().instance().get(&LAST_TRADE_ID).unwrap_or(0)

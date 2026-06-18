@@ -94,6 +94,7 @@ impl Axis {
         let mut dispatcher = Dispatcher::new(&e);
         //execute orders if list was provided
         if orders.len() > 0 {
+            let max_exec_price = orderbook::get_price_threshold(&e, &direction, price);
             (sold, bought) = orderbook::match_orders(
                 &e,
                 &direction,
@@ -101,7 +102,7 @@ impl Axis {
                 amount,
                 &selling,
                 &buying,
-                price,
+                max_exec_price,
                 orders,
                 &mut dispatcher,
             );
@@ -232,5 +233,142 @@ impl Axis {
             orderbook::cross_orders(&e, &trader, taker_order_id, orders, &mut dispatcher);
         dispatcher.settle();
         (sold, bought)
+    }
+
+    /// Swap tokens across several markets.
+    /// The swap executes within the boundaries, otherwise trade get canceled:
+    /// * `Sell`: exactly `selling_amount` sold, the received amount is `>= buying_amount`
+    /// * `Buy`: exactly `buying_amount` received, the spent amount is `<= selling_amount`
+    ///
+    ///
+    /// # Arguments
+    /// * `direction` - Trade direction: `Sell` or `Buy`
+    /// * `trader` - Trader address
+    /// * `selling` - Token address sent by the trader
+    /// * `selling_amount` - Maximum amount of selling tokens to send
+    /// * `buying_amount` - Minimum amount of buying tokens to receive
+    /// * `path` - Ordered list of the trade route steps
+    ///
+    /// # Returns
+    ///
+    /// * Amount of sold tokens
+    /// * Amount of bought tokens
+    ///
+    /// Returns `(0, 0)` without if the route cannot satisfy the selling/buying amount
+    ///
+    /// # Panics
+    ///
+    /// If the trader has insufficient balance
+    /// If the trade causes an overflow
+    /// If any of the orders provided do not match trade step selling/buying asset
+    /// If `path` is empty
+    pub fn swap(
+        e: Env,
+        direction: TradeDirection,
+        trader: Address,
+        selling: Address,
+        selling_amount: i128,
+        buying_amount: i128,
+        path: Vec<trade::TradeStep>,
+    ) -> (i128, i128) {
+        trader.require_auth();
+        bump_instance(&e);
+
+        let total_steps = path.len();
+        if total_steps == 0 || selling_amount <= 0 || buying_amount <= 0 {
+            e.panic_with_error(OrderbookError::InvalidMatch);
+        }
+
+        let axis = e.current_contract_address();
+        let mut dispatcher = Dispatcher::new(&e);
+        //the trader receives the buying asset from the last step
+        let dest_asset = path.get(total_steps - 1).unwrap().asset;
+
+        //accept every supplied order regardless of price; slippage is checked on the aggregate
+        let no_price_limit = i128::MAX;
+
+        let (amount_sold, amount_bought) = match direction {
+            //fixed input: each step sells the entire output of the previous step, front to back
+            TradeDirection::Sell => {
+                let mut in_amount = selling_amount;
+                let mut out_amount = 0;
+                for i in 0..total_steps {
+                    let step = path.get(i).unwrap();
+                    let sell_asset = if i == 0 {
+                        selling.clone()
+                    } else {
+                        path.get(i - 1).unwrap().asset
+                    };
+                    let (sold, bought) = orderbook::match_orders(
+                        &e,
+                        &TradeDirection::Sell,
+                        &axis,
+                        in_amount,
+                        &sell_asset,
+                        &step.asset,
+                        no_price_limit,
+                        step.orders,
+                        &mut dispatcher,
+                    );
+                    //the whole input must be converted
+                    if sold != in_amount {
+                        return (0, 0);
+                    }
+                    in_amount = bought;
+                    out_amount = bought;
+                }
+                (selling_amount, out_amount)
+            }
+            //fixed output: walk back to front, deriving the input each step must deliver
+            TradeDirection::Buy => {
+                let mut out_amount = buying_amount;
+                let mut in_amount = 0;
+                let mut i = total_steps;
+                while i > 0 {
+                    i -= 1;
+                    let step = path.get(i).unwrap();
+                    let sell_asset = if i == 0 {
+                        selling.clone()
+                    } else {
+                        path.get(i - 1).unwrap().asset
+                    };
+                    let (sold, bought) = orderbook::match_orders(
+                        &e,
+                        &TradeDirection::Buy,
+                        &axis,
+                        out_amount,
+                        &sell_asset,
+                        &step.asset,
+                        no_price_limit,
+                        step.orders,
+                        &mut dispatcher,
+                    );
+                    //out_amount must be acquired in full at every hop
+                    if bought != out_amount {
+                        return (0, 0);
+                    }
+                    out_amount = sold;
+                    in_amount = sold;
+                }
+                (in_amount, buying_amount)
+            }
+        };
+
+        if direction == TradeDirection::Sell && amount_bought < buying_amount
+            || direction == TradeDirection::Buy && amount_sold > selling_amount
+        {
+            return (0, 0); //can't execute
+        }
+
+        //deposit selling tokens
+        Dispatcher::transfer(&e, &trader, &axis, &selling, amount_sold);
+        //transfer acquired tokens to trader
+        dispatcher.add_transfer(&axis, &trader, &dest_asset, amount_bought);
+        //settle all transfers
+        dispatcher.settle();
+        //emit swap event
+        events::emit_swap(&e, trader, selling, dest_asset, amount_sold, amount_bought);
+        //return actually sold and bought amounts
+        (amount_sold, amount_bought)
     }
 }

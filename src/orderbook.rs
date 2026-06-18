@@ -14,10 +14,19 @@ pub(crate) fn invert_price(e: &Env, price: i128) -> i128 {
     res
 }
 
-/// Match a taker order against a list of maker orders in the orderbook.
+/// Resolve taker-provided `max_price` into the threshold to compare against maker `order.price`.
+pub(crate) fn get_price_threshold(e: &Env, direction: &TradeDirection, max_price: i128) -> i128 {
+    match direction {
+        TradeDirection::Sell => invert_price(e, max_price),
+        TradeDirection::Buy => max_price,
+    }
+}
+
+/// Match taker's quote against a list of maker orders in the orderbook.
 /// Depending on `direction`:
-///   - Sell: `amount` is in `selling` units, `max_price` is min "buying per selling"
-///   - Buy : `amount` is in `buying` units,  `max_price` is max "selling per buying"
+///   - Sell: `amount` is in `selling` units
+///   - Buy : `amount` is in `buying` units
+/// `max_exec_price` is the acceptance threshold (calculated by `get_price_threshold` or `i128::MAX`)
 pub(crate) fn match_orders(
     e: &Env,
     direction: &TradeDirection,
@@ -25,25 +34,17 @@ pub(crate) fn match_orders(
     amount: i128,
     selling: &Address,
     buying: &Address,
-    max_price: i128,
+    max_exec_price: i128,
     orders: Vec<u64>,
     dispatcher: &mut Dispatcher,
 ) -> (i128, i128) {
-    // Price-acceptance threshold compared against `order.price`:
-    //   Sell: orders are priced in "maker.buying per maker.selling" = "taker.selling per taker.buying".
-    //         The taker's max_price is "taker.buying per taker.selling", so invert it.
-    //   Buy : both maker.price and taker.max_price are in "taker.selling per taker.buying" — no invert.
-    let max_exec_price = match direction {
-        TradeDirection::Sell => invert_price(e, max_price),
-        TradeDirection::Buy => max_price,
-    };
     let now = e.ledger().timestamp();
     let mut total_bought = 0i128;
     let mut total_sold = 0i128;
     let mut amount_left = amount; //sell-units for Sell, buy-units for Buy
 
     for maker_order_id in orders.iter() {
-        let order = match load_maker_for_match(e, maker_order_id, selling, buying, now) {
+        let order = match load_matching_order(e, maker_order_id, selling, buying, now) {
             Some(o) => o,
             None => continue,
         };
@@ -140,6 +141,7 @@ pub(crate) fn cross_orders(
     }
     let taker_order = fetched_taker_order.unwrap();
     //on-book orders are sell-equivalent, so cross from the sell side
+    let max_exec_price = get_price_threshold(&e, &TradeDirection::Sell, taker_order.price);
     let (sold, bought) = match_orders(
         &e,
         &TradeDirection::Sell,
@@ -147,7 +149,7 @@ pub(crate) fn cross_orders(
         taker_order.amount,
         &taker_order.selling,
         &taker_order.buying,
-        taker_order.price,
+        max_exec_price,
         orders,
         dispatcher,
     );
@@ -178,28 +180,30 @@ pub(crate) fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i
 }
 
 /// Load a maker order and pre-validate it for matching.
-/// Returns None when the order is missing, has no remaining amount, or has expired.
-/// Panics with InvalidMatch when the asset pair does not align with the taker.
-fn load_maker_for_match(
+/// # Returns
+/// * `None` when the order is missing, has no remaining amount, or has expired.
+/// # Panics
+/// * InvalidMatch when the traded pair does not match traded tokens.
+fn load_matching_order(
     e: &Env,
-    maker_order_id: u64,
+    order_id: u64,
     taker_selling: &Address,
     taker_buying: &Address,
     now: u64,
 ) -> Option<Order> {
-    let fetched = load_order(e, &maker_order_id)?;
+    let fetched = load_order(e, &order_id)?;
     //make sure that we are trading correct tokens
     if &fetched.selling != taker_buying || &fetched.buying != taker_selling {
         e.panic_with_error(OrderbookError::InvalidMatch);
     }
-    //skip orders with no remaining amount or expired
+    //skip expired and empty orders
     if fetched.amount <= 0 || (fetched.expires > 0 && fetched.expires <= now) {
         return None;
     }
     Some(fetched)
 }
 
-/// Final invariant check applied after a matching loop.
+/// Check trade results after the entire trade execution.
 fn validate_match_totals(e: &Env, total_sold: i128, total_bought: i128) {
     if total_sold < 0
         || total_bought < 0
@@ -234,7 +238,7 @@ fn trade_with_order(
 
     //prepare and emit trade event
     let trade = trade::Trade {
-        id: trade::next_trade_id(e),
+        id: 0,
         order: order.id,
         taker: taker.clone(),
         maker,
