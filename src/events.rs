@@ -1,5 +1,5 @@
 use crate::order::Order;
-use crate::trade::Trade;
+use crate::trade::{Swap, Trade};
 use soroban_sdk::{contractevent, log, Address, Env, Symbol};
 
 #[contractevent(topics = ["AXIS", "trade"], data_format = "single-value")]
@@ -16,7 +16,7 @@ pub struct TradeEvent {
     pub trade: Trade,
 }
 
-#[contractevent(topics = ["AXIS", "swap"], data_format = "map")]
+#[contractevent(topics = ["AXIS", "swap"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SwapEvent {
     /// Asset sold by the trader
@@ -25,12 +25,8 @@ pub struct SwapEvent {
     /// Asset received by the trader
     #[topic]
     pub buying: Address,
-    /// Trader account address
-    pub trader: Address,
-    /// Amount of `selling` tokens sold
-    pub sold: i128,
-    /// Amount of `buying` tokens received
-    pub bought: i128,
+    /// Swap details
+    pub swap: Swap
 }
 
 #[contractevent(topics = ["AXIS", "order"], data_format = "single-value")]
@@ -72,9 +68,11 @@ pub(crate) fn emit_swap(
     SwapEvent {
         selling,
         buying,
-        trader,
-        sold,
-        bought,
+        swap: Swap {
+            trader,
+            sold,
+            bought,
+        }
     }
     .publish(e);
 }

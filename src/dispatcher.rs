@@ -84,7 +84,7 @@ impl Dispatcher {
         for trade in self.trades.iter(){
             let mut trade = trade;
             trade.id = crate::trade::next_trade_id(&e);
-            emit_trade(&e, trade.buying.clone(), trade.selling.clone(), trade);
+            emit_trade(&e, trade.selling.clone(), trade.buying.clone(), trade);
         }
         //apply order changes
         for (mut order, change) in self.changes.iter() {

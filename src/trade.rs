@@ -24,6 +24,18 @@ pub struct Trade {
     pub bought: i128,
 }
 
+/// Orderbook swap event
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Swap {
+    /// Trader account address
+    pub trader: Address,
+    /// Amount of `selling` tokens sold
+    pub sold: i128,
+    /// Amount of `buying` tokens received
+    pub bought: i128,
+}
+
 /// A trade step in a multi-market swap path.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
