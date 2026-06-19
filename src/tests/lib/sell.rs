@@ -1,7 +1,7 @@
 use super::setup::{fake_asset, setup_test};
 use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, Axis, AxisClient};
-use soroban_sdk::testutils::{Address as _};
+use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 use test_case::test_case;
 
@@ -112,7 +112,7 @@ fn test_sell_fill(
     amount: i128,
     price: i128,
     expected_sold: i128,
-    expected_bought: i128
+    expected_bought: i128,
 ) {
     let (e, maker, _, usd, eur) = setup_test();
     let contract_address = e.register(Axis, ());

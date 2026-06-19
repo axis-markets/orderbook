@@ -1,6 +1,6 @@
+use crate::utils::shorten;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{log, Address, Env};
-use crate::utils::shorten;
 
 /// Create a fake Stellar asset for testing
 pub fn fake_asset(env: &Env, issuer: &Address) -> Address {

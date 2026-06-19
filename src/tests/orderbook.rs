@@ -1,9 +1,9 @@
+use crate::order::{OrderKind, TradeDirection};
 use crate::orderbook::{invert_price, PRECISION};
 use crate::{Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 use test_case::test_case;
-use crate::order::{OrderKind, TradeDirection};
 
 //rounding
 #[test_case(3, 2, 3000, 4501, 3000, 4501)]

@@ -1,8 +1,8 @@
 use super::setup::setup_test;
+use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, Axis, AxisClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{token::StellarAssetClient, Address, Vec};
-use crate::order::{OrderKind, TradeDirection};
 
 #[test]
 fn test_fill_order_empty_orders_list() {
@@ -17,8 +17,16 @@ fn test_fill_order_empty_orders_list() {
     usd_client.mint(&trader, &10000);
 
     // Create taker order
-    let (_, _, taker_order_id) =
-        client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, taker_order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &1000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Try to fill with empty orders list
     let orders = Vec::new(&e);
@@ -47,8 +55,16 @@ fn test_fill_order_taker_not_found() {
     eur_client.mint(&maker, &10000);
 
     // Create maker order
-    let (_, _, maker_order_id) =
-        client.trade(&TradeDirection::Sell, &OrderKind::Limit, &maker, &1000, &eur, &usd, &PRECISION, &Vec::new(&e));
+    let (_, _, maker_order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &maker,
+        &1000,
+        &eur,
+        &usd,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Try to fill non-existent taker order - should panic
     let orders = Vec::from_array(&e, [maker_order_id]);

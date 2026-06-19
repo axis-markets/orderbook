@@ -71,11 +71,38 @@ fn test_cancel_multiple_orders() {
     let initial_balance = usd_client.balance(&trader);
 
     // Create multiple orders
-    let (_, _, order1) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order1) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &1000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
-    let (_, _, order2) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order2) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &2000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
-    let (_, _, order3) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &3000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order3) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &3000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Cancel second order
     client.cancel(&Vec::from_array(&e, [order2]), &trader);
@@ -107,13 +134,40 @@ fn test_cancel_after_partial_fill() {
     eur_client.mint(&taker, &10000);
 
     // Create a large order
-    let (_, _, order_id) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &maker, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &maker,
+        &1000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Partially fill it
-    client.trade(&TradeDirection::Sell, &OrderKind::Limit, &taker, &300, &eur, &usd, &PRECISION, &Vec::new(&e));
+    client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &taker,
+        &300,
+        &eur,
+        &usd,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     let orders = Vec::from_array(&e, [order_id]);
-    client.trade(&TradeDirection::Sell, &OrderKind::Fill, &taker, &300, &eur, &usd, &PRECISION, &orders);
+    client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Fill,
+        &taker,
+        &300,
+        &eur,
+        &usd,
+        &PRECISION,
+        &orders,
+    );
 
     assert_eq!(usd_client.balance(&maker), 9000);
     // Now cancel the remaining portion
@@ -136,7 +190,16 @@ fn test_cancel_wrong_owner() {
     usd_client.mint(&trader, &10000);
 
     // Create an order
-    let (_, _, order_id) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order_id) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &1000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Try to cancel with different address - should panic
     let other_trader = Address::generate(&e);
@@ -154,8 +217,26 @@ fn test_cancel_mixed_existent_and_non_existent() {
 
     let initial_balance = usd_client.balance(&trader);
 
-    let (_, _, order1) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
-    let (_, _, order2) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order1) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &1000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
+    let (_, _, order2) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &2000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Mix real IDs with a non-existent one - the non-existent should be silently skipped
     client.cancel(&Vec::from_array(&e, [order1, 99999u64, order2]), &trader);
@@ -178,9 +259,36 @@ fn test_cancel_batched_same_asset() {
 
     let initial_balance = usd_client.balance(&trader);
 
-    let (_, _, order1) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &1000, &usd, &eur, &PRECISION, &Vec::new(&e));
-    let (_, _, order2) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &2000, &usd, &eur, &PRECISION, &Vec::new(&e));
-    let (_, _, order3) = client.trade(&TradeDirection::Sell, &OrderKind::Limit, &trader, &3000, &usd, &eur, &PRECISION, &Vec::new(&e));
+    let (_, _, order1) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &1000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
+    let (_, _, order2) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &2000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
+    let (_, _, order3) = client.trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &trader,
+        &3000,
+        &usd,
+        &eur,
+        &PRECISION,
+        &Vec::new(&e),
+    );
 
     // Cancel all three same-asset orders in one batched call.
     // The dispatcher should aggregate refunds into a single token.transfer.
