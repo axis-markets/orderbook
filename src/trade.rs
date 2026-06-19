@@ -28,8 +28,14 @@ pub struct Trade {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Swap {
+    /// Unique swap id (last trade id assigned while settling the swap legs)
+    pub id: u64,
     /// Trader account address
     pub trader: Address,
+    /// Sold asset address
+    pub selling: Address,
+    /// Bought asset address
+    pub buying: Address,
     /// Amount of `selling` tokens sold
     pub sold: i128,
     /// Amount of `buying` tokens received
@@ -45,7 +51,6 @@ pub struct TradeStep {
     /// Maker order IDs to match
     pub orders: Vec<u64>,
 }
-
 
 pub(crate) fn get_last_trade_id(e: &Env) -> u64 {
     e.storage().instance().get(&LAST_TRADE_ID).unwrap_or(0)

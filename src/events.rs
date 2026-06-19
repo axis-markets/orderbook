@@ -1,6 +1,6 @@
 use crate::order::Order;
-use crate::trade::{Swap, Trade};
-use soroban_sdk::{contractevent, log, Address, Env, Symbol};
+use crate::trade::{next_trade_id, Swap, Trade};
+use soroban_sdk::{contractevent, Address, Env, Symbol};
 
 #[contractevent(topics = ["AXIS", "trade"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,7 +26,7 @@ pub struct SwapEvent {
     #[topic]
     pub buying: Address,
     /// Swap details
-    pub swap: Swap
+    pub swap: Swap,
 }
 
 #[contractevent(topics = ["AXIS", "order"], data_format = "single-value")]
@@ -46,8 +46,9 @@ pub struct OrderEvent {
     pub order: Order,
 }
 
-pub(crate) fn emit_trade(e: &Env, selling: Address, buying: Address, trade: Trade) {
-    log!(e, "evt:trade", trade.clone());
+pub(crate) fn emit_trade(e: &Env, selling: Address, buying: Address, mut trade: Trade) {
+    trade.id = next_trade_id(&e);
+    //log!(e, "evt:trade", trade.clone());
     TradeEvent {
         selling,
         buying,
@@ -64,21 +65,25 @@ pub(crate) fn emit_swap(
     sold: i128,
     bought: i128,
 ) {
-    log!(e, "evt:swap", sold, bought);
+    let swap = Swap {
+        id: next_trade_id(&e),
+        trader,
+        selling: selling.clone(),
+        buying: buying.clone(),
+        sold,
+        bought,
+    };
+    //log!(e, "evt:swap", sold, bought);
     SwapEvent {
         selling,
         buying,
-        swap: Swap {
-            trader,
-            sold,
-            bought,
-        }
+        swap,
     }
     .publish(e);
 }
 
 pub(crate) fn emit_order_event(e: &Env, action: Symbol, order: Order) {
-    log!(e, "evt:order", action, order.clone());
+    //log!(e, "evt:order", action, order.clone());
     OrderEvent {
         action,
         selling: order.selling.clone(),

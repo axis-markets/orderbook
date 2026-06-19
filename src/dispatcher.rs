@@ -1,10 +1,10 @@
 use crate::errors::OrderbookError;
+use crate::events::emit_trade;
 use crate::order::Order;
+use crate::orderbook::apply_order_trade;
 use crate::trade::Trade;
 use crate::utils::shorten;
 use soroban_sdk::{log, token, Address, Env, Map, Vec};
-use crate::events::emit_trade;
-use crate::orderbook::apply_order_trade;
 
 pub(crate) struct Dispatcher {
     transfers: Map<Address, Map<(Address, Address), i128>>,
@@ -81,9 +81,7 @@ impl Dispatcher {
             }
         }
         //emit trades
-        for trade in self.trades.iter(){
-            let mut trade = trade;
-            trade.id = crate::trade::next_trade_id(&e);
+        for trade in self.trades.iter() {
             emit_trade(&e, trade.selling.clone(), trade.buying.clone(), trade);
         }
         //apply order changes

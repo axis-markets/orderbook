@@ -313,7 +313,10 @@ fn test_swap_event_sell() {
         selling: usd.clone(),
         buying: gbp.clone(),
         swap: Swap {
+            id: 3,
             trader: trader.clone(),
+            selling: usd.clone(),
+            buying: gbp.clone(),
             sold: 1000,
             bought: 757,
         },
@@ -399,6 +402,9 @@ fn test_swap_event_buy() {
         selling: usd.clone(),
         buying: gbp.clone(),
         swap: Swap {
+            id: 3,
+            selling: usd.clone(),
+            buying: gbp.clone(),
             trader: trader.clone(),
             sold: 132,
             bought: 100,

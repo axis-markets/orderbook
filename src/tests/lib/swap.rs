@@ -114,8 +114,8 @@ fn test_swap_sell_two_hops() {
     assert_eq!(eur_client.balance(&contract_address), 0);
     assert_eq!(gbp_client.balance(&contract_address), 0);
 
-    // two legs settled => sequential trade ids 1 and 2 were assigned
-    assert_eq!(last_trade_id(&e, &contract_address), 2);
+    // two legs settled => sequential trade ids 1 and 2 were assigned, 3 - for swap event
+    assert_eq!(last_trade_id(&e, &contract_address), 3);
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn test_swap_buy_two_hops() {
     assert_eq!(eur_client.balance(&contract_address), 0);
     assert_eq!(gbp_client.balance(&contract_address), 0);
 
-    assert_eq!(last_trade_id(&e, &contract_address), 2);
+    assert_eq!(last_trade_id(&e, &contract_address), 3);
 }
 
 #[test]
