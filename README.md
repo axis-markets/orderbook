@@ -48,15 +48,15 @@ Panics
 
 ---
 
-`fn cancel(id: u64, trader: Address)`
-Cancel existing order
+`fn cancel(ids: Vec<u64>, trader: Address)`
+Cancel existing orders
 
 Arguments
-- `id` - ID of the order to cancel
+- `ids` - IDs of the orders to cancel (non-existent ids are silently skipped)
 - `trader` - Trader address
 
 Panics
-- If trader is not the owner of the order
+- If `trader` is not the owner of any existing order in `ids`
 
 ---
 
