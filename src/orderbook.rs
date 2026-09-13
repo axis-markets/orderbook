@@ -157,6 +157,8 @@ pub(crate) fn cross_orders(
     if sold > 0 {
         //schedule settlement and emit trade event
         trade_with_order(&e, &taker_order, &trader, sold, bought, dispatcher);
+        //taker order sold `sold` of its selling asset - decrement or remove it at settle
+        dispatcher.add_order_changes(taker_order, sold);
     }
 
     //return actual sold/bought amounts

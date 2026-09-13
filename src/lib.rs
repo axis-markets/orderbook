@@ -228,6 +228,8 @@ impl Axis {
         orders: Vec<u64>,
     ) -> (i128, i128) {
         //TODO: trader should receive all profits saved from matching existing orders and removing inefficiency
+        trader.require_auth();
+        bump_instance(&e);
         let mut dispatcher = Dispatcher::new(&e);
         let (sold, bought) =
             orderbook::cross_orders(&e, &trader, taker_order_id, orders, &mut dispatcher);
