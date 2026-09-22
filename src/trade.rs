@@ -1,46 +1,5 @@
-use soroban_sdk::{contracttype, Address, Env, Vec};
-
-const LAST_TRADE_ID: &str = "lt";
-
-/// Orderbook trade event
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Trade {
-    /// Unique trade id
-    pub id: u64,
-    /// Order id
-    pub order: u64,
-    /// Trader account address
-    pub taker: Address,
-    /// Seller account address
-    pub maker: Address,
-    /// Sold asset address
-    pub selling: Address,
-    /// Bought asset address
-    pub buying: Address,
-    /// Sold tokens amount
-    pub sold: i128,
-    /// Bought tokens amount
-    pub bought: i128,
-}
-
-/// Orderbook swap event
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Swap {
-    /// Unique swap id (last trade id assigned while settling the swap legs)
-    pub id: u64,
-    /// Trader account address
-    pub trader: Address,
-    /// Sold asset address
-    pub selling: Address,
-    /// Bought asset address
-    pub buying: Address,
-    /// Amount of `selling` tokens sold
-    pub sold: i128,
-    /// Amount of `buying` tokens received
-    pub bought: i128,
-}
+//! Argument types shared by the trading entry points.
+use soroban_sdk::{contracttype, token, Address, Env, Vec};
 
 /// A trade step in a multi-market swap path.
 #[contracttype]
@@ -48,16 +7,42 @@ pub struct Swap {
 pub struct TradeStep {
     /// Asset to buy at this step
     pub asset: Address,
-    /// Maker order IDs to match
-    pub orders: Vec<u64>,
+    /// Maker order ids to match
+    pub orders: Vec<u128>,
 }
 
-pub(crate) fn get_last_trade_id(e: &Env) -> u64 {
-    e.storage().instance().get(&LAST_TRADE_ID).unwrap_or(0)
+/// Token allowance granted to the contract as part of the call
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approval {
+    /// Token the allowance is granted on
+    pub asset: Address,
+    /// Absolute allowance amount
+    pub amount: i128,
+    /// Ledger sequence the allowance lives until
+    pub live_until: u32,
 }
 
-pub(crate) fn next_trade_id(e: &Env) -> u64 {
-    let last = get_last_trade_id(&e) + 1;
-    e.storage().instance().set(&LAST_TRADE_ID, &last);
-    last
+/// New amount, price and expiration for an existing order
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrderUpdate {
+    /// Order id
+    pub id: u128,
+    /// New amount to sell, 0 removes the order
+    pub amount: i128,
+    /// New order price (ignored when the order is removed)
+    pub price: i128,
+    /// New expiration timestamp, 0 = no expiration (ignored when the order is removed)
+    pub expires: u64,
+}
+
+/// Grant the contract the allowance on `approval.asset` on behalf of `trader`
+pub(crate) fn approve(e: &Env, trader: &Address, approval: &Approval) {
+    token::Client::new(e, &approval.asset).approve(
+        trader,
+        &e.current_contract_address(),
+        &approval.amount,
+        &approval.live_until,
+    );
 }

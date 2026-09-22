@@ -1,49 +1,51 @@
+//! Matching engine: fills a taker against a list of maker orders and crosses book orders.
 use crate::dispatcher::Dispatcher;
 use crate::errors::OrderbookError;
-use crate::order::{load_order, remove_order, update_order, Order, TradeDirection};
-use crate::trade;
-use soroban_sdk::{Address, Env, Vec};
+use crate::events;
+use crate::math::{invert_price_floor, is_dust, mul_div_ceil, mul_div_floor};
+use crate::order::{self, load_live_order, load_order, Order, TradeDirection};
+use soroban_sdk::{token, Address, Env, Vec};
 
-pub const PRECISION: i128 = 10i128.pow(18);
-
-pub(crate) fn invert_price(e: &Env, price: i128) -> i128 {
-    let res = PRECISION * PRECISION / price;
-    if res < 0 {
-        e.panic_with_error(OrderbookError::Overflow);
-    }
-    res
-}
+pub use crate::math::PRECISION;
 
 /// Resolve taker-provided `max_price` into the threshold to compare against maker `order.price`.
 pub(crate) fn get_price_threshold(e: &Env, direction: &TradeDirection, max_price: i128) -> i128 {
     match direction {
-        TradeDirection::Sell => invert_price(e, max_price),
+        TradeDirection::Sell => invert_price_floor(e, max_price),
         TradeDirection::Buy => max_price,
     }
 }
 
-/// Match taker's quote against a list of maker orders in the orderbook.
+/// Match a taker against a list of maker orders, queueing the fills on the dispatcher.
 /// Depending on `direction`:
-///   - Sell: `amount` is in `selling` units
-///   - Buy : `amount` is in `buying` units
-/// `max_exec_price` is the acceptance threshold (calculated by `get_price_threshold` or `i128::MAX`)
+/// - Sell: `amount` is in `selling` units
+/// - Buy : `amount` is in `buying` units
+///
+/// `max_exec_price` is the acceptance threshold (from `get_price_threshold` or `i128::MAX`).
+/// With `profit_floor` (a stored taker order's price) a fill is skipped unless it yields at
+/// least what that order is owed for the amount it pays.
+/// Stops as soon as the taker is filled; duplicate and unusable ids are skipped
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn match_orders(
     e: &Env,
     direction: &TradeDirection,
-    taker: &Address,
     amount: i128,
     selling: &Address,
     buying: &Address,
     max_exec_price: i128,
-    orders: Vec<u64>,
+    orders: &Vec<u128>,
+    profit_floor: Option<i128>,
     dispatcher: &mut Dispatcher,
-) -> (i128, i128) {
+) {
     let now = e.ledger().timestamp();
-    let mut total_bought = 0i128;
-    let mut total_sold = 0i128;
     let mut amount_left = amount; //sell-units for Sell, buy-units for Buy
-
+    let mut seen: Vec<u128> = Vec::new(e);
     for maker_order_id in orders.iter() {
+        //an order listed twice fills once
+        if seen.contains(maker_order_id) {
+            continue;
+        }
+        seen.push_back(maker_order_id);
         let order = match load_matching_order(e, maker_order_id, selling, buying, now) {
             Some(o) => o,
             None => continue,
@@ -55,130 +57,140 @@ pub(crate) fn match_orders(
         //compute per-order trade amounts in taker units
         let (sold, bought) = match direction {
             TradeDirection::Sell => sell_amounts_for(e, &order, amount_left),
-            TradeDirection::Buy => buy_amounts_for(&order, amount_left),
+            TradeDirection::Buy => buy_amounts_for(e, &order, amount_left),
         };
         //helpers return (0, 0) when this order cannot be executed
         if sold == 0 || bought == 0 {
             continue;
         }
-        //schedule settlement and emit trade event
-        trade_with_order(&e, &order, &taker, bought, sold, dispatcher);
-        //update maker order amount
-        dispatcher.add_order_changes(order, bought);
-        //accumulate
-        total_bought += bought;
-        total_sold += sold;
+        //rounding must never leave the stored taker order underpaid
+        if let Some(taker_price) = profit_floor {
+            if bought < mul_div_ceil(e, sold, taker_price, PRECISION) {
+                continue;
+            }
+        }
         //decrement remaining work in the direction-appropriate unit
         amount_left -= match direction {
             TradeDirection::Sell => sold,
             TradeDirection::Buy => bought,
         };
-        if amount_left < 0 {
-            //consumed more than planned
-            e.panic_with_error(OrderbookError::Overflow);
-        }
-        if amount_left == 0 {
+        dispatcher.add_fill(order, bought, sold);
+        if amount_left <= 0 {
             break;
         }
     }
-    validate_match_totals(e, total_sold, total_bought);
-    (total_sold, total_bought)
 }
 
-/// How much can trader sell to this order at its price
+/// How much the taker can sell to this order at its price: the acquired amount is rounded
+/// down, the amount paid for it rounded up, so the maker is never underpaid.
 /// Returns (sold, bought) or (0, 0) if the trade can't be executed
 fn sell_amounts_for(e: &Env, order: &Order, amount_left: i128) -> (i128, i128) {
-    //invert_price would divide by zero
-    if order.price <= 0 {
+    let mut bought = mul_div_floor(e, amount_left, PRECISION, order.price);
+    if bought > order.amount {
+        bought = order.amount;
+    }
+    if bought == 0 {
         return (0, 0);
     }
-    //maximum buying tokens this order yields for the remaining sell amount at its price
-    let mut bought = invert_price(e, order.price) * amount_left / PRECISION;
+    //never above amount_left: bought <= amount_left * PRECISION / price
+    let sold = mul_div_ceil(e, bought, order.price, PRECISION);
+    (sold, bought)
+}
+
+/// How much the taker can buy from this order, paying the rounded-up cost.
+/// Returns (sold, bought) or (0, 0) if the trade can't be executed
+fn buy_amounts_for(e: &Env, order: &Order, buy_left: i128) -> (i128, i128) {
+    let bought = buy_left.min(order.amount);
     if bought <= 0 {
         return (0, 0);
     }
-    let mut sold = amount_left;
-    //clamp to order's available amount
-    if bought > order.amount {
-        bought = order.amount;
-        //recompute selling amount needed to claim the clamped buy
-        sold = order.price * bought / PRECISION;
-        if sold <= 0 {
-            return (0, 0);
-        }
-    }
+    let sold = mul_div_ceil(e, bought, order.price, PRECISION);
     (sold, bought)
 }
 
-/// How much can trader buy from this order
-/// Returns (sold, bought) or (0, 0) if the trade can't be executed
-fn buy_amounts_for(order: &Order, buy_left: i128) -> (i128, i128) {
-    //buy at most what's left, capped by the maker's available amount
-    let bought = if buy_left < order.amount {
-        buy_left
-    } else {
-        order.amount
-    };
-    //cost in taker.selling tokens at the maker's price
-    let sold = order.price * bought / PRECISION;
-    if sold <= 0 {
-        return (0, 0);
-    }
-    (sold, bought)
-}
-
+/// Cross an existing taker order against maker orders. The taker order's owner pays the makers
+/// through their allowance and is paid exactly at the taker order's price; the spread crossed
+/// goes to `trader`.
+/// Returns (amount the owner sold, amount the makers delivered, surplus paid to `trader`)
 pub(crate) fn cross_orders(
     e: &Env,
     trader: &Address,
-    taker_order_id: u64,
-    orders: Vec<u64>,
-    dispatcher: &mut Dispatcher,
-) -> (i128, i128) {
-    //load from orderbook
-    let fetched_taker_order = load_order(&e, &taker_order_id);
-    if fetched_taker_order.is_none() {
-        e.panic_with_error(OrderbookError::OrderNotFound);
+    taker_order_id: u128,
+    orders: &Vec<u128>,
+) -> (i128, i128, i128) {
+    //an expired taker order is gone
+    let mut taker_order = match load_live_order(e, taker_order_id) {
+        Some(o) => o,
+        None => e.panic_with_error(OrderbookError::OrderNotFound),
+    };
+    let axis = e.current_contract_address();
+    let owner = taker_order.owner.clone();
+    let selling = taker_order.selling.clone();
+    let buying = taker_order.buying.clone();
+    //the owner backs the taker order with balance and allowance like any maker
+    let budget = taker_order.amount.min(order::backing(e, &selling, &owner));
+    if budget <= 0 {
+        order::remove_with_mod(e, &taker_order);
+        return (0, 0, 0);
     }
-    let taker_order = fetched_taker_order.unwrap();
+    //the payout legs below are plain transfers: check the recipients first
+    order::require_can_receive(e, &buying, &owner);
+    order::require_can_receive(e, &buying, trader);
     //on-book orders are sell-equivalent, so cross from the sell side
-    let max_exec_price = get_price_threshold(&e, &TradeDirection::Sell, taker_order.price);
-    let (sold, bought) = match_orders(
-        &e,
+    let max_exec_price = get_price_threshold(e, &TradeDirection::Sell, taker_order.price);
+    let mut dispatcher = Dispatcher::new(
+        e,
+        owner.clone(),
+        selling.clone(),
+        buying.clone(),
+        axis.clone(),
+        false,
+        false,
+    );
+    match_orders(
+        e,
         &TradeDirection::Sell,
-        &trader,
-        taker_order.amount,
-        &taker_order.selling,
-        &taker_order.buying,
+        budget,
+        &selling,
+        &buying,
         max_exec_price,
         orders,
-        dispatcher,
+        Some(taker_order.price),
+        &mut dispatcher,
     );
-    //if the trade was successful
-    if sold > 0 {
-        //schedule settlement and emit trade event
-        trade_with_order(&e, &taker_order, &trader, sold, bought, dispatcher);
-        //taker order sold `sold` of its selling asset - decrement or remove it at settle
-        dispatcher.add_order_changes(taker_order, sold);
+    let (paid, received) = dispatcher.settle();
+    if paid == 0 {
+        return (0, 0, 0);
     }
-
-    //return actual sold/bought amounts
-    (sold, bought)
-}
-
-pub(crate) fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i128) {
-    if bought_from_order > order.amount {
-        //attempt to sell more than planned
-        e.panic_with_error(OrderbookError::InvalidMatch);
+    //the owner gets exactly what the taker order asks for, the rest goes to the trader
+    let owed = mul_div_ceil(e, paid, taker_order.price, PRECISION);
+    let surplus = received - owed;
+    if surplus < 0 {
+        e.panic_with_error(OrderbookError::Overflow);
     }
-    //adjust remaining amount
-    order.amount -= bought_from_order;
-    if order.amount == 0 {
-        //executed in full - remove from orderbook
-        remove_order(e, &order);
-        return;
+    let buying_token = token::Client::new(e, &buying);
+    buying_token.transfer(&axis, &owner, &owed);
+    if surplus > 0 {
+        buying_token.transfer(&axis, trader, &surplus);
     }
-    //update in orderbook
-    update_order(e, &order);
+    //the backing left caps the taker order like any other order of the owner
+    let mut left = (taker_order.amount - paid).min(budget - paid);
+    if is_dust(e, left, taker_order.price) {
+        left = 0;
+    }
+    order::apply_change(e, &mut taker_order, left);
+    events::emit_trade(
+        e,
+        &buying,
+        &selling,
+        taker_order.id,
+        trader,
+        &owner,
+        owed,
+        paid,
+        left,
+    );
+    (paid, received, surplus)
 }
 
 /// Load a maker order and pre-validate it for matching.
@@ -188,66 +200,19 @@ pub(crate) fn apply_order_trade(e: &Env, order: &mut Order, bought_from_order: i
 /// * InvalidMatch when the traded pair does not match traded tokens.
 fn load_matching_order(
     e: &Env,
-    order_id: u64,
+    order_id: u128,
     taker_selling: &Address,
     taker_buying: &Address,
     now: u64,
 ) -> Option<Order> {
-    let fetched = load_order(e, &order_id)?;
+    let fetched = load_order(e, order_id)?;
     //make sure that we are trading correct tokens
     if &fetched.selling != taker_buying || &fetched.buying != taker_selling {
         e.panic_with_error(OrderbookError::InvalidMatch);
     }
     //skip expired and empty orders
-    if fetched.amount <= 0 || (fetched.expires > 0 && fetched.expires <= now) {
+    if fetched.amount <= 0 || fetched.is_expired(now) {
         return None;
     }
     Some(fetched)
-}
-
-/// Check trade results after the entire trade execution.
-fn validate_match_totals(e: &Env, total_sold: i128, total_bought: i128) {
-    if total_sold < 0
-        || total_bought < 0
-        || (total_sold == 0 && total_bought != 0)
-        || (total_sold != 0 && total_bought == 0)
-    {
-        e.panic_with_error(OrderbookError::InvalidMatch);
-    }
-}
-
-fn trade_with_order(
-    e: &Env,
-    order: &Order,
-    taker: &Address,
-    bought_from_order: i128,
-    sold_to_order: i128,
-    dispatcher: &mut Dispatcher,
-) {
-    let maker = order.owner.clone();
-    //add amounts to settle
-    dispatcher.add_transfer(taker, &maker, &order.buying, sold_to_order);
-    dispatcher.add_transfer(
-        &e.current_contract_address(),
-        taker,
-        &order.selling,
-        bought_from_order,
-    );
-
-    //TODO: settle directly using approvals, without contract intermediary
-    //dispatcher.add(&taker, &maker, &order.selling, sold_to_order);
-    //dispatcher.add(&maker, &taker, &order.buying, bought_from_order);
-
-    //prepare and emit trade event
-    let trade = trade::Trade {
-        id: 0,
-        order: order.id,
-        taker: taker.clone(),
-        maker,
-        selling: order.buying.clone(),
-        buying: order.selling.clone(),
-        sold: sold_to_order,
-        bought: bought_from_order,
-    };
-    dispatcher.add_trade(trade);
 }

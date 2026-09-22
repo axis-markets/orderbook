@@ -1,10 +1,23 @@
 #![cfg(test)]
+mod admin;
+mod allowance;
+mod auth;
 mod buy;
-mod cancel;
+mod crossfill;
 mod events;
+mod expiration;
 mod fetch_order;
-mod fill_order;
+mod ids;
+mod market;
+mod math;
+mod mock_oracle;
+mod pricing;
+mod remove;
 mod resources;
 mod sell;
-mod setup;
+pub mod setup;
+mod skip;
 mod swap;
+mod ttl;
+mod update;
+mod utils;

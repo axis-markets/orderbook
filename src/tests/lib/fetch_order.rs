@@ -1,96 +1,38 @@
-use super::setup::setup_test;
-use crate::order::{OrderKind, TradeDirection};
-use crate::{orderbook::PRECISION, Axis, AxisClient};
-use soroban_sdk::{token::StellarAssetClient, Vec};
+use super::setup::{fund, register_axis, setup_test, store_order};
+use crate::{orderbook::PRECISION, AxisClient};
 
 #[test]
 fn test_order_retrieval() {
     let (e, trader, _, usd, eur) = setup_test();
-    let contract_address = e.register(Axis, ());
+    let contract_address = register_axis(&e);
     let client = AxisClient::new(&e, &contract_address);
-
-    // Mint tokens to trader
-    let usd_client = StellarAssetClient::new(&e, &usd);
-    usd_client.mint(&trader, &1000000);
+    fund(&e, &usd, &contract_address, &trader, 1000000);
 
     let amount = 1000;
     let price = PRECISION;
-
-    // Create an order
-    let (_, _, order_id) = client.trade(
-        &TradeDirection::Sell,
-        &OrderKind::Limit,
-        &trader,
-        &amount,
-        &usd,
-        &eur,
-        &price,
-        &Vec::new(&e),
-    );
+    let order_id = store_order(&client, &trader, amount, &usd, &eur, price);
 
     // Retrieve the order
     let order = client.order(&order_id).unwrap();
 
     // Verify order details
+    assert_eq!(order.id, order_id);
     assert_eq!(order.owner, trader);
     assert_eq!(order.amount, amount);
     assert_eq!(order.selling, usd);
     assert_eq!(order.buying, eur);
     assert_eq!(order.price, price);
-}
-#[test]
-fn test_last_after_order_creation() {
-    let (e, trader, _, usd, eur) = setup_test();
-    let contract_address = e.register(Axis, ());
-    let client = AxisClient::new(&e, &contract_address);
-
-    // Mint tokens to trader
-    let usd_client = StellarAssetClient::new(&e, &usd);
-    usd_client.mint(&trader, &1000000);
-
-    // Initially, last order ID should be 0
-    let last_id = client.last();
-    assert_eq!(last_id, 0);
-    // Create an order
-    let (_, _, order_id) = client.trade(
-        &TradeDirection::Sell,
-        &OrderKind::Limit,
-        &trader,
-        &1000,
-        &usd,
-        &eur,
-        &PRECISION,
-        &Vec::new(&e),
-    );
-
-    // Last order ID should match the created order
-    let last_id = client.last();
-    assert_eq!(last_id, order_id);
-    assert_eq!(last_id, 1);
-
-    // Create second order
-    let (_, _, orderid2) = client.trade(
-        &TradeDirection::Sell,
-        &OrderKind::Limit,
-        &trader,
-        &2000,
-        &usd,
-        &eur,
-        &PRECISION,
-        &Vec::new(&e),
-    );
-    assert_eq!(orderid2, 2);
-    assert_eq!(client.last(), 2);
+    assert_eq!(order.expires, 0);
 }
 
 #[test]
 fn test_order_not_found() {
     let (e, _, _, _, _) = setup_test();
-    let contract_address = e.register(Axis, ());
+    let contract_address = register_axis(&e);
     let client = AxisClient::new(&e, &contract_address);
 
-    // Try to fetch non-existent order
+    // Try to fetch non-existent orders
     assert_eq!(client.order(&999), None);
-    // Try to fetch order with ID 0 - should panic
     assert_eq!(client.order(&0), None);
+    assert_eq!(client.order(&u128::MAX), None);
 }
