@@ -1,30 +1,51 @@
+//! Matching engine rounding: the taker's acquired amount is rounded down, the amount paid
+//! for it rounded up, so a maker is never underpaid and the taker never pays more than one
+//! unit above the exact price.
+use super::lib::setup::{
+    actor, fake_asset, fund, list_asset, no_orders, open_market, register_axis, setup_oracle,
+    store_order, trade, try_trade, UNIT_PRICE,
+};
+use crate::math::invert_price_floor;
 use crate::order::{OrderKind, TradeDirection};
-use crate::orderbook::{invert_price, PRECISION};
-use crate::{Axis, AxisClient};
+use crate::orderbook::PRECISION;
+use crate::AxisClient;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
+use soroban_sdk::{Address, Env, Vec};
 use test_case::test_case;
 
+fn env() -> (Env, Address, Address, Address, Address) {
+    let e = Env::default();
+    e.mock_all_auths();
+    let issuer = Address::generate(&e);
+    let usd = fake_asset(&e, &issuer);
+    let eur = fake_asset(&e, &issuer);
+    setup_oracle(&e, &issuer);
+    list_asset(&e, &usd, UNIT_PRICE);
+    list_asset(&e, &eur, UNIT_PRICE);
+    let maker = actor(&e);
+    let trader = actor(&e);
+    (e, usd, eur, maker, trader)
+}
+
 //rounding
-#[test_case(3, 2, 3000, 4501, 3000, 4501)]
-#[test_case(3, 2, 3000, 4500, 2999, 4500)]
+#[test_case(3, 2, 3000, 4501, 3000, 4500)]
+#[test_case(3, 2, 3000, 4500, 3000, 4500)]
 #[test_case(3, 2, 3000, 4499, 2999, 4499)]
 #[test_case(3, 2, 2999, 4499, 2999, 4499)]
-#[test_case(3, 2, 2999, 4498, 2998, 4498)]
-#[test_case(2, 3, 3000, 2001, 3000, 1999)]
+#[test_case(3, 2, 2999, 4498, 2998, 4497)]
+#[test_case(2, 3, 3000, 2001, 3000, 2000)]
 #[test_case(2, 3, 3000, 2000, 3000, 2000)]
 #[test_case(2, 3, 3000, 1999, 2998, 1999)]
-#[test_case(2, 3, 2999, 2000, 2999, 1999)]
+#[test_case(2, 3, 2999, 2000, 2999, 2000)]
 #[test_case(2, 3, 2999, 1999, 2998, 1999)]
 //micro trades
-#[test_case(3, 2, 28, 27, 17, 27)]
+#[test_case(3, 2, 28, 27, 18, 27)]
 #[test_case(3, 2, 28, 26, 17, 26)]
-#[test_case(3, 2, 52, 51, 33, 51)]
+#[test_case(3, 2, 52, 51, 34, 51)]
 #[test_case(3, 2, 52, 50, 33, 50)]
 #[test_case(30000000, 2, 1, 1, 0, 0)]
-#[test_case(3, 20000000, 1, 1, 0, 0)]
-#[test_case(30000000, 2, 10, 100000000, 6, 100000000)]
-#[test_case(3, 20000000, 10000000, 10, 10000000, 1)]
+#[test_case(30000000, 2, 10, 100000000, 6, 90000000)]
+#[test_case(3, 20000000, 10000000, 10, 10000000, 2)]
 #[test_case(3, 20000000, 10000000, 1, 6666666, 1)]
 fn test_fill(
     n: i128,
@@ -34,63 +55,62 @@ fn test_fill(
     expected_x_received: i128,
     expected_y_sent: i128,
 ) {
-    let e = Env::default();
-    e.mock_all_auths();
-
-    let maker = Address::generate(&e);
-    let trader = Address::generate(&e);
-    let issuer = Address::generate(&e);
-    let usd = fake_asset(&e, &issuer);
-    let eur = fake_asset(&e, &issuer);
-
-    let usd_asset_client = StellarAssetClient::new(&e, &usd);
-    let eur_asset_client = StellarAssetClient::new(&e, &eur);
-
-    usd_asset_client.mint(&maker, &10000000000000000);
-    eur_asset_client.mint(&maker, &10000000000000000);
-
-    usd_asset_client.mint(&trader, &10000000000000000);
-    eur_asset_client.mint(&trader, &10000000000000000);
-
-    let price = PRECISION * n / d;
-
-    let contract_address = e.register(Axis, ());
+    let (e, usd, eur, maker, trader) = env();
+    let contract_address = register_axis(&e);
     let orderbook_client = AxisClient::new(&e, &contract_address);
+    fund(&e, &usd, &contract_address, &maker, 10000000000000000);
+    fund(&e, &eur, &contract_address, &trader, 10000000000000000);
 
-    let (_, _, order_id) = orderbook_client.trade(
-        &TradeDirection::Sell,
-        &OrderKind::Limit,
-        &maker,
-        &x_order_amount,
-        &usd,
-        &eur,
-        &price,
-        &Vec::new(&e),
-    );
+    //maker sells X (USD) at n/d Y per X
+    let price = PRECISION * n / d;
+    let order_id = store_order(&orderbook_client, &maker, x_order_amount, &usd, &eur, price);
     let orders = Vec::from_array(&e, [order_id]);
-    let (bought, sold, _) = orderbook_client.trade(
-        &TradeDirection::Sell,
-        &OrderKind::Fill,
+    let (y_sent, x_received, _) = trade(
+        &orderbook_client,
+        TradeDirection::Sell,
+        OrderKind::Fill,
         &trader,
-        &y_trade_amount,
+        y_trade_amount,
         &eur,
         &usd,
-        &invert_price(&e, price),
+        invert_price_floor(&e, price),
         &orders,
     );
     assert_eq!(
-        bought, expected_y_sent,
+        (y_sent, x_received),
+        (expected_y_sent, expected_x_received),
         "trade {}/{} ({}X on order) {}Y -> ({}Y -> {}X)",
-        n, d, x_order_amount, y_trade_amount, expected_y_sent, expected_x_received
+        n,
+        d,
+        x_order_amount,
+        y_trade_amount,
+        expected_y_sent,
+        expected_x_received
     );
-    assert_eq!(
-        sold, expected_x_received,
-        "trade {}/{} ({}X on order) {}Y -> ({}Y -> {}X)",
-        n, d, x_order_amount, y_trade_amount, expected_y_sent, expected_x_received
-    );
+    //the maker never gets less than the order price for what they delivered
+    assert!(y_sent * PRECISION >= x_received * price);
 }
 
-fn fake_asset(env: &Env, issuer: &Address) -> Address {
-    env.register_stellar_asset_contract_v2(issuer.clone())
-        .address()
+#[test]
+fn test_dust_order_is_rejected() {
+    //1 X at 1.5e-7 Y per X is worth less than one unit of Y: it can never be filled
+    let (e, usd, eur, maker, _) = env();
+    let contract_address = register_axis(&e);
+    let client = AxisClient::new(&e, &contract_address);
+    open_market(&client, &usd, &eur);
+    fund(&e, &usd, &contract_address, &maker, 1000);
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::Limit,
+            &maker,
+            1,
+            &usd,
+            &eur,
+            PRECISION * 3 / 20000000,
+            &no_orders(&e),
+        ),
+        Some(720)
+    );
 }
