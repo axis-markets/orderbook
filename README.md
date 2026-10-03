@@ -113,10 +113,10 @@ Panics
 ---
 
 `fn update(trader: Address, updates: Vec<OrderUpdate>, approvals: Vec<Approval>) -> Vec<u128>`
-Update the amount, price, or expiration of several orders in place, or remove them.
-Orders that no longer exist are skipped; expired orders revived with the new expiration.
-A zero amount removes the order, expired ones included. An updated order's entry lifetime is
-extended to cover its expiration +1 day. Approvals and removals work in a frozen contract.
+Update the amount, price, or expiration of several orders in place, or remove them. Orders that no longer exist are
+skipped; expired orders revived with the new expiration. A zero amount removes the order, expired ones included. An
+updated order's entry lifetime is extended to cover its expiration +1 day. Approvals and removals work in a frozen
+contract.
 
 Arguments
 
@@ -142,8 +142,7 @@ Panics
 ---
 
 `fn crossfill(trader: Address, taker_order_id: u128, orders: Vec<u128>) -> (i128, i128, i128)`
-Fill an existing order against matching orders from the orderbook.
-Profits from inefficiencies go to the trader.
+Fill an existing order against matching orders from the orderbook. Profits from inefficiencies go to the trader.
 
 Arguments
 
@@ -166,8 +165,7 @@ Panics
 ---
 
 `fn swap(direction: TradeDirection, trader: Address, selling: Address, selling_amount: i128, buying_amount: i128, path: Vec<TradeStep>, approve: Option<Approval>) -> (i128, i128)`
-Swap tokens across several markets.
-The contract holds the intermediate hop proceeds only within the call.
+Swap tokens across several markets. The contract holds the intermediate hop proceeds only within the call.
 
 Arguments
 
@@ -194,10 +192,9 @@ Panics
 ---
 
 `fn requote(selling: Address, buying: Address) -> Option<Market>`
-Re-check both market assets against the price oracle and cache oracle prices.
-A cached price is valid for up to 72 hours. A market without quoted assets stops accepting
-new limit orders; its outstanding orders stay cancellable and fillable. The record and the
-cached prices are rewritten only when they change.
+Re-check both market assets against the price oracle and cache oracle prices. A cached price is valid for up to 72
+hours. A market without quoted assets stops accepting new limit orders; its outstanding orders stay cancellable and
+fillable. The record and the cached prices are rewritten only when they change.
 
 Arguments
 
@@ -303,16 +300,18 @@ allowance reads as zero and must be granted again.
 
 `Approval { asset, amount, live_until }` passed to `trade` or `swap` (normally on `selling`), or in the `approvals`
 list of `update`, performs the `approve` on `asset` inside the call as a sub-invocation the trader signs. `update`
-leaves the allowance on an asset without an approval unchanged. The amount is absolute, so the signed authorization
-does not depend on the ledger state.
+leaves the allowance on an asset without an approval unchanged. The amount is absolute, so the signed authorization does
+not depend on the ledger state.
 
-The book does not guarantee that an open order is backed: the owner can spend the balance or revoke the allowance at
-any time. A listed order fills only when the maker's backing left covers that fill (one budget shared by the maker's
-orders in list order) and the maker can receive the taker's asset; otherwise it is skipped, left unchanged, and a `skip`
+The book does not guarantee that an open order is backed: the owner can spend the balance or revoke the allowance at any
+time. A listed order fills only when the maker's backing left covers that fill (one budget shared by the maker's orders
+in list order) and the maker can receive the taker's asset; otherwise it is skipped, left unchanged, and a `skip`
 event names it. The same happens when the maker's transfer fails despite the backing (classic liabilities, reserve, a
-deauthorized trustline). Matching never removes, trims or caps an order. Routers should compute the effective depth per
-maker and asset as `min(balance, allowance)` shared across that maker's orders, treat the allowance's
-`live_until_ledger` as an expiry, and use `skip` events to stop proposing orders of makers that fail to settle.
+deauthorized trustline). A transfer the taker cannot receive is not the maker's fault: the trade fails with
+`CannotReceive` and no maker is flagged. Matching never removes, trims or caps an order. Routers should compute the
+effective depth per maker and asset as `min(balance, allowance)` shared across that maker's orders, treat the
+allowance's `live_until_ledger` as an expiry, and use `skip` events to stop proposing orders of makers that fail to
+settle.
 
 ## Order ids
 
@@ -324,21 +323,21 @@ id = u128::from_be_bytes(sha256(xdr([owner, nonce]))[0..16])
 
 Hashed bytes are the XDR of the `ScVal` vector `[owner: Address, nonce: u64]`. The nonce must be unique among the
 owner's live orders (a duplicate fails with `OrderExists`); once the order is gone or has expired the nonce may be
-reused, and a new order overwrites the expired entry. Clients
-typically derive it from the clock plus random bits. The id is known before the transaction is simulated, so the order
-entry can be declared in the footprint.
+reused, and a new order overwrites the expired entry (its lifetime is extended as for an `update`). Clients typically
+derive it from the clock plus random bits. The id is known before the transaction is simulated, so the order entry can
+be declared in the footprint.
 
 ## Order expiration
 
 An order with a non-zero `expires` stops being live once the ledger timestamp reaches it (`expires <= now`). From then
 on the contract treats it as gone: matching skips it (`trade`, `swap`, `crossfill` makers), `crossfill` fails on it as
-the taker order (`OrderNotFound`), `order` returns `None`, and its id is free for a new order. The entry itself stays
-in storage until `update` removes it (`amount = 0`, owner only), a new order under the same id overwrites it, or its TTL
-runs out. `update` also revives an expired order: it rewrites the entry with the new amount, price and
-expiration, which must be `0` or in the future like any update, and emits `mod`; indexers should therefore keep an
-expired order's record until it is removed rather than forget it at expiry. The expiration is set by `trade` for the 
-stored remainder and changed by `update` (`0` lifts it); both reject a
-timestamp that is not in the future (`InvalidExpiration`). The `new` and `mod` events carry it.
+the taker order (`OrderNotFound`), `order` returns `None`, and its id is free for a new order. The entry itself stays in
+storage until `update` removes it (`amount = 0`, owner only), a new order under the same id overwrites it, or its TTL
+runs out. `update` also revives an expired order: it rewrites the entry with the new amount, price and expiration, which
+must be `0` or in the future like any update, and emits `mod`; indexers should therefore keep an expired order's record
+until it is removed rather than forget it at expiry. The expiration is set by `trade` for the stored remainder and
+changed by `update` (`0` lifts it); both reject a timestamp that is not in the future (`InvalidExpiration`). The `new`
+and `mod` events carry it.
 
 ## Order storage format
 
@@ -364,14 +363,14 @@ struct Order {
 ```
 
 The ledger entry (a persistent entry keyed by the raw `u128` id) stores it positionally, without the id, to keep the
-entry small: a `Vec` of `[owner, selling, buying, amount, price]`, with `expires` appended only when it is set. An
-order without expiration takes 172-176 bytes of value (about 250 bytes of ledger entry).
+entry small: a `Vec` of `[owner, selling, buying, amount, price]`, with `expires` appended only when it is set. An order
+without expiration takes 172-176 bytes of value (about 250 bytes of ledger entry).
 
 Orders are stored sell-equivalent: a `Buy` remainder stored as "sell `ceil(amount × price)` of the selling asset at the
 rounded-up inverse price". A new order entry gets the network minimum lifetime (about 120 days). Every `update` that
-changes an order extends its entry to cover the expiration plus a day, or to 120 days for an order without expiration
-(never shortening it); fills and removals do not extend it. Whoever touches an archived order pays for its
-restoration.
+changes an order, and a new order written over an expired entry under the same id, extends the entry to cover the
+expiration plus a day, or to 120 days for an order without expiration (never shortening it). Fills and removals do not
+extend it. Whoever touches an archived order pays for its restoration.
 
 ## Argument types
 
@@ -488,8 +487,8 @@ struct Config {
 ```
 
 The listing fee pays one `track` call, whose amount the oracle splits evenly across the market's listed assets: a pair
-with one listed asset gets 90 days of that asset's feed, a pair with both assets listed 45 days of each. A later
-change of the oracle's own daily fee is picked up only by the next `set_oracle`.
+with one listed asset gets 90 days of that asset's feed, a pair with both assets listed 45 days of each. A later change
+of the oracle's own daily fee is picked up only by the next `set_oracle`.
 
 ## Frozen mode
 
@@ -506,9 +505,9 @@ contract, which cannot perform any balance actions while frozen.
 
 ## Contract lifetime
 
-`keepalive` extends the contract instance and code to 180 days on every call; keepers are expected to call it
-regularly. Every other entry point extends them only when less than 3 days are left, and then to 3 days, so traders pay
-contract rent only when keepers have not done their job.
+`keepalive` extends the contract instance and code to 180 days on every call; keepers are expected to call it regularly.
+Every other entry point extends them only when less than 3 days are left, and then to 3 days, so traders pay contract
+rent only when keepers have not done their job.
 
 ## Events
 
@@ -521,7 +520,8 @@ Emitted once per each order fill. Fills emit no order events.
 
 Topics: `["trade", selling: Address, buying: Address]` (assets sold and bought by the taker)
 Data: `[order: u128, taker: Address, maker: Address, sold: i128, bought: i128, left: i128]`
-`left` is the order amount after the fill, `0` when the order was filled in full (or what is left became dust) and removed.
+`left` is the order amount after the fill, `0` when the order was filled in full (or what is left became dust) and
+removed.
 
 ### `swap`
 
@@ -539,9 +539,9 @@ Data: `[id: u128, owner: Address, price: i128, amount: i128, expires: u64]`
 
 ### `mod`
 
-Emitted when an order changed outside a fill - by `update` with the new price, amount and expiration, and by a
-removal (an `update` with a zero amount) with `amount = 0` and the price and expiration unchanged. An order reaching
-its expiration emits nothing.
+Emitted when an order changed outside a fill - by `update` with the new price, amount and expiration, and by a removal
+(an `update` with a zero amount) with `amount = 0` and the price and expiration unchanged. An order reaching its
+expiration emits nothing.
 
 Topics: `["mod"]`
 Data: `[id: u128, price: i128, amount: i128, expires: u64]`
@@ -549,9 +549,10 @@ Data: `[id: u128, price: i128, amount: i128, expires: u64]`
 ### `skip`
 
 Emitted when a listed order is not executed because its maker could not settle the fill: the backing left does not cover
-it, the maker cannot receive the taker's asset, or the maker's transfer failed. The order is left unchanged. For
-`crossfill` it also flags a taker order its owner cannot back or be paid for. Missing, expired, overpriced and duplicate
-ids, and ids of another pair, emit nothing.
+it, the maker cannot receive the taker's asset, or the maker's transfer failed on the maker's side. A transfer the taker
+cannot receive fails the trade (`CannotReceive`) instead, so `skip` never flags a maker for the taker's trustline. The
+order is left unchanged. For `crossfill` it also flags a taker order its owner cannot back or be paid for. Missing,
+expired, overpriced and duplicate ids, and ids of another pair, emit nothing.
 
 Topics: `["skip"]`  
 Data: `u128` - the order id

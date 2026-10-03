@@ -119,11 +119,15 @@ pub(crate) fn load_live_order(e: &Env, id: u128) -> Option<Order> {
     load_order(e, id).filter(|order| !order.is_expired(e.ledger().timestamp()))
 }
 
-/// Reject an id held by a live order; an expired order frees its id
+/// Reject an id held by a live order; an expired order frees its id.
+/// Returns whether an expired order still holds the entry
 #[inline]
-pub(crate) fn require_free(e: &Env, id: u128) {
-    if load_live_order(e, id).is_some() {
-        e.panic_with_error(OrderbookError::OrderExists);
+pub(crate) fn require_free(e: &Env, id: u128) -> bool {
+    match load_order(e, id) {
+        Some(order) if !order.is_expired(e.ledger().timestamp()) => {
+            e.panic_with_error(OrderbookError::OrderExists)
+        }
+        stale => stale.is_some(),
     }
 }
 
@@ -147,7 +151,7 @@ pub(crate) fn store_order(
     price: i128,
     expires: u64,
 ) -> u128 {
-    require_free(e, id);
+    let replaced = require_free(e, id);
     let order = Order {
         id,
         owner,
@@ -158,6 +162,10 @@ pub(crate) fn store_order(
         expires,
     };
     write_order(e, &order);
+    //a fresh entry starts at the network minimum lifetime, an overwritten one keeps the old TTL
+    if replaced {
+        bump_order(e, id, expires);
+    }
     events::emit_new(e, &order);
     id
 }

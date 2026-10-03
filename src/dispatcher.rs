@@ -1,4 +1,5 @@
 //! Settlement of matched fills, aggregated per maker and paid through token allowances.
+use crate::errors::OrderbookError;
 use crate::events;
 use crate::math::is_dust;
 use crate::order::{self, Order};
@@ -136,7 +137,8 @@ impl Dispatcher {
     }
 
     /// Settle every fill maker by maker. Maker's assets go to the receiver, the taker's
-    /// asset to the maker. Skipped orders are reported with `skip` events.
+    /// asset to the maker. Skipped orders are reported with `skip` events. A receiver that refuses
+    /// the acquired asset fails the call (`CannotReceive`) rather than skipping the makers.
     /// Returns the amounts the taker actually sold and bought
     pub fn settle(self) -> (i128, i128) {
         let e = &self.e;
@@ -164,6 +166,14 @@ impl Dispatcher {
                 .try_transfer_from(&axis, &maker, &self.receiver, &maker_sends)
                 .is_err()
             {
+                //a maker who can move the amount to themselves is ok - the receiver refused it
+                if self.receiver != axis
+                    && get_token
+                        .try_transfer_from(&axis, &maker, &maker, &maker_sends)
+                        .is_ok()
+                {
+                    e.panic_with_error(OrderbookError::CannotReceive);
+                }
                 // the backing read passed, so the balance is locked elsewhere (classic liabilities,
                 // reserve) or the trustline is deauthorized: skip the maker, their orders stay untouched
                 for fill in fills.iter() {

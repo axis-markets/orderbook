@@ -1,13 +1,14 @@
 //! Order expiration: set by `trade` and `update`, enforced by every path that reads an order.
 use super::setup::{
-    actor, advance, balance, code, ensure_market, fund, nonce, register_axis, remove_orders,
-    setup_test, store_order, trade, try_remove_orders, try_trade,
+    actor, advance, advance_ledgers, balance, code, ensure_market, fund, mainnet_ttls, nonce,
+    register_axis, remove_orders, setup_test, store_order, trade, try_remove_orders, try_trade,
+    MIN_PERSISTENT_TTL,
 };
 use crate::events::{OrderCreatedEvent, OrderUpdatedEvent};
 use crate::order::{OrderKind, TradeDirection};
 use crate::trade::TradeStep;
 use crate::{orderbook::PRECISION, AxisClient};
-use soroban_sdk::testutils::Events as _;
+use soroban_sdk::testutils::{storage::Persistent as _, Events as _};
 use soroban_sdk::{Address, Env, Event, Vec};
 
 /// Order lifetime used throughout
@@ -408,4 +409,51 @@ fn test_expired_order_frees_its_nonce() {
         (order.amount, order.price, order.expires),
         (700, 2 * PRECISION, 0)
     );
+}
+
+#[test]
+fn test_order_over_an_expired_entry_gets_a_fresh_ttl() {
+    const LPD: u32 = 17_280;
+    let (e, trader, _, usd, eur) = setup_test();
+    mainnet_ttls(&e);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let ttl = |id: u128| e.as_contract(&axis, || e.storage().persistent().get_ttl(&id));
+    let id = store_until(
+        &client,
+        &trader,
+        1000,
+        &usd,
+        &eur,
+        PRECISION,
+        9,
+        deadline(&e),
+    );
+    assert_eq!(ttl(id), MIN_PERSISTENT_TTL - 1);
+    // months pass below: no floor, so the orders need no cached price
+    client.set_floor(&0);
+
+    // 100 days later the expired entry has 20 days left; an order expiring in 30 days written
+    // over it covers its expiration plus a day
+    advance(&e, LIFETIME);
+    advance_ledgers(&e, 100 * LPD);
+    assert_eq!(ttl(id), 20 * LPD - 1);
+    let in_thirty_days = e.ledger().timestamp() + 30 * 86_400;
+    let again = store_until(
+        &client,
+        &trader,
+        700,
+        &usd,
+        &eur,
+        PRECISION,
+        9,
+        in_thirty_days,
+    );
+    assert_eq!(again, id);
+    assert_eq!(ttl(id), 31 * LPD);
+
+    // once that one expires too, an order without expiration gets 120 days, like a fresh entry
+    advance(&e, 30 * 86_400);
+    store_until(&client, &trader, 500, &usd, &eur, PRECISION, 9, 0);
+    assert_eq!(ttl(id), 120 * LPD);
 }

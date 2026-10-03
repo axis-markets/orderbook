@@ -12,6 +12,7 @@ mod ids;
 mod market;
 mod math;
 mod mock_oracle;
+mod mock_token;
 mod pricing;
 mod remove;
 mod resources;

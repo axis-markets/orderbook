@@ -31,7 +31,7 @@ pub(crate) fn bump_market(e: &Env, key: &DataKey) {
     e.storage().persistent().extend_ttl(key, min, extend);
 }
 
-/// Extend an updated order entry to cover its expiration plus a day, or 120 days for an order
+/// Extend an updated (or overwritten) order entry to cover its expiration plus a day, or 120 days for an order
 /// that does not expire (also the cap). Never shortens a longer TTL
 pub(crate) fn bump_order(e: &Env, id: u128, expires: u64) {
     let max = LPD * ORDER_TTL_DAYS;
