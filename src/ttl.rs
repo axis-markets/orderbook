@@ -5,10 +5,9 @@ use soroban_sdk::{Address, Env};
 const LPD: u32 = 17_280; //ledgers per day at 5 s per ledger
 /// Approximate ledger close time (in seconds)
 const LEDGER_TIME: u64 = 5;
-/// Contract lifetime a regular call keeps: it tops the contract up only when keepers let it run low
+/// Contract lifetime a regular call keeps: it tops the contract up only when keepers let it run low.
+/// Keepers extend the instance and code with the `ExtendFootprintTTL` operation, no entry point needed
 pub(crate) const USER_BUMP_DAYS: u32 = 3;
-/// Contract lifetime `keepalive` extends to
-pub(crate) const KEEPALIVE_BUMP_DAYS: u32 = 180;
 /// Order entry lifetime granted by `update`
 const ORDER_TTL_DAYS: u32 = 120;
 

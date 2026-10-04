@@ -497,17 +497,7 @@ fn crossfill_cranker_sorting_before_contract_needs_no_float() {
     assert_eq!((sold, bought, profit), (ORDER_AMOUNT, ORDER_AMOUNT, 0));
 }
 
-// ---- keepalive / views --------------------------------------------------------------------
-
-#[test]
-fn gate_keepalive() {
-    let (e, _, _, usd, eur) = gate_env();
-    let (client, _, _, _) = seed_book(&e, &eur, &usd, 1, true);
-    client.keepalive();
-    let u = measure(&e, "keepalive");
-    assert!(u.within_tx_limits(), "{:?}", u);
-    assert_eq!(u.event_bytes, 0);
-}
+// ---- views --------------------------------------------------------------------------------
 
 #[test]
 fn measure_views() {

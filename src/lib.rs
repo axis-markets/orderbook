@@ -20,7 +20,7 @@ use crate::math::{
     check_price, invert_price_ceil, is_dust, mul_div_ceil, mul_div_floor, PRECISION,
 };
 use crate::trade::{Approval, OrderUpdate, TradeStep};
-use crate::ttl::{bump_contract, KEEPALIVE_BUMP_DAYS, USER_BUMP_DAYS};
+use crate::ttl::{bump_contract, USER_BUMP_DAYS};
 use order::{Order, OrderKind, TradeDirection};
 use soroban_sdk::{contract, contractimpl, Address, Env, Map, Vec};
 
@@ -678,10 +678,5 @@ impl Axis {
         admin::require_safety_admin(&e);
         bump_contract(&e, USER_BUMP_DAYS);
         admin::set_min_trade_size(&e, minimum);
-    }
-
-    /// Extend the contract instance and code lifetime to 180 days.
-    pub fn keepalive(e: Env) {
-        bump_contract(&e, KEEPALIVE_BUMP_DAYS);
     }
 }

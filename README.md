@@ -286,10 +286,6 @@ Panics
 - If the call is not authorized by the safety admin
 - If `minimum` is negative
 
----
-
-`fn keepalive()`
-Extend the contract instance and code lifetime to 180 days.
 
 ## Allowances
 
@@ -497,7 +493,7 @@ no funds, so a full stop strands no user funds.
 
 The contract in the `frozen` state blocks all trading and market operations (`trade`, `swap`, `crossfill`, `subsidize`,
 `requote`) and any `update` that changes an order. Order removals and approvals through `update` still work, so makers
-can pull their quotes and revoke allowances before trading resumes. Read-only functions, `keepalive` and admin-level
+can pull their quotes and revoke allowances before trading resumes. Read-only functions and admin-level
 operations (`freeze`, `delegate`, `set_oracle`, `set_floor`) remain active.
 
 Open orders and standing allowances are left untouched by the switch; an allowance can only be spent through the
@@ -505,9 +501,10 @@ contract, which cannot perform any balance actions while frozen.
 
 ## Contract lifetime
 
-`keepalive` extends the contract instance and code to 180 days on every call; keepers are expected to call it regularly.
-Every other entry point extends them only when less than 3 days are left, and then to 3 days, so traders pay contract
-rent only when keepers have not done their job.
+The contract has no lifetime entry point. Keepers extend the contract instance and its WASM code with the standard
+`ExtendFootprintTTL` operation (both entries in the read-only footprint), for a horizon of their choice up to the network
+maximum. Every state-changing entry point also extends both entries when less than 3 days are left, and then to 3 days,
+so traders pay contract rent only when keepers have not done their job.
 
 ## Events
 
