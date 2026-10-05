@@ -49,7 +49,7 @@ impl Axis {
     ///
     /// # Returns
     ///
-    /// Safety admin address, price oracle address, market listing fee, and minimum trade size
+    /// Current contract configuration
     pub fn config(e: Env) -> Config {
         market::config(&e)
     }
@@ -117,6 +117,7 @@ impl Axis {
     /// If the contract is frozen
     /// If `amount` is invalid, `price` is out of range, or `selling` equals `buying`
     /// If the trader cannot pay for the fills, or cannot receive `buying`
+    /// If the contract cannot hold `buying` on its way to the trader (`IntermediaryCannotReceive`)
     /// If a `FillOrKill` trade cannot be executed in full (`NotFilled`)
     /// If the remainder is not backed by the trader's balance and allowance
     /// If an order with the same id is already on the book (`OrderExists`)
@@ -194,24 +195,27 @@ impl Axis {
             TradeDirection::Sell => sold,
             TradeDirection::Buy => bought,
         };
-        //executed in full, a `Sell` leftover worth less than one unit of `buying` at the trader's
-        //price cannot buy anything from any order the price accepts, so it counts as executed
-        let executed = |sold: i128, bought: i128| match direction {
-            TradeDirection::Sell => is_dust(&e, amount - sold, price),
+        // sell asset leftover that cannot buy a single unit at the highest order price filled counts as executed and stays with the trader
+        let executed = |sold: i128, bought: i128, worst_price: i128| match direction {
+            TradeDirection::Sell => {
+                sold >= amount
+                    || (worst_price > 0
+                        && mul_div_floor(&e, amount - sold, PRECISION, worst_price) == 0)
+            }
             TradeDirection::Buy => bought >= amount,
         };
         //FillOrKill does not allow partial execution: fail before moving anything
         if kind == OrderKind::FillOrKill {
             let (sold, bought) = dispatcher.planned();
-            if !executed(sold, bought) {
+            if !executed(sold, bought, dispatcher.worst_price()) {
                 e.panic_with_error(OrderbookError::NotFilled);
             }
         }
         //settle all fills
-        let (sold, bought) = dispatcher.settle();
+        let (sold, bought, worst_price) = dispatcher.settle();
         let filled = filled_of(sold, bought);
         //a maker skipped at settlement triggers NotFilled
-        if kind == OrderKind::FillOrKill && !executed(sold, bought) {
+        if kind == OrderKind::FillOrKill && !executed(sold, bought, worst_price) {
             e.panic_with_error(OrderbookError::NotFilled);
         }
         //return if executed in full or partial execution requested
@@ -236,26 +240,27 @@ impl Axis {
         }
         //the id must be free, the remainder backed by the trader's balance and allowance
         let id = order::order_id(&e, &trader, nonce);
-        order::require_free(&e, id);
+        let replaced = order::require_free(&e, id);
         order::require_backed(&e, &trader, &selling, order_amount);
         order::require_can_receive(&e, &buying, &trader);
-        order::store_order(
-            &e,
+        let order = Order {
             id,
-            trader,
-            order_amount,
             selling,
             buying,
-            order_price,
+            amount: order_amount,
+            owner: trader,
+            price: order_price,
             expires,
-        );
+        };
+        order::store_order(&e, &order, replaced);
         (sold, bought, Some(id))
     }
 
     /// Update the amount, price, or expiration of several orders in place, or remove them.
     /// Orders that no longer exist are skipped; expired orders revived with the new expiration.
     /// A zero amount removes the order, expired ones included. An updated order's entry lifetime is
-    /// extended to cover its expiration +1 day. Approvals and removals work in a frozen contract.
+    /// extended to cover its expiration +1 day. Approvals and removals work in a frozen contract
+    /// and on a market without quoted assets.
     ///
     /// # Arguments
     ///
@@ -276,6 +281,7 @@ impl Axis {
     /// If the new amounts are not backed by the trader's balance and allowance
     /// If an order is below the minimum value
     /// If the contract is frozen and an update changes an order (`Frozen`)
+    /// If an update changes an order whose market has no quoted asset (`AssetsNotVerifiedByOracle`)
     /// If no listed market asset has a usable cached price (`AssetPriceOracleFetchFailed`)
     pub fn update(
         e: Env,
@@ -325,10 +331,8 @@ impl Axis {
             if is_dust(&e, update.amount, update.price) {
                 e.panic_with_error(OrderbookError::OrderSizeTooSmall);
             }
-            let market = match market::load_market(&e, &existing.selling, &existing.buying) {
-                Some(market) => market,
-                None => e.panic_with_error(OrderbookError::OrderNotFound),
-            };
+            //a market without quoted assets takes no new liquidity: its orders can only be removed
+            let market = market::load_listed_market(&e, &existing.selling, &existing.buying);
             //stored orders are sell-equivalent
             pricing::enforce_min_order_value(
                 &e,
@@ -375,6 +379,7 @@ impl Axis {
     ///
     /// If the contract is frozen
     /// If the taker order does not exist or has expired (`OrderNotFound`)
+    /// If the contract cannot hold the bought asset (`IntermediaryCannotReceive`)
     /// If `trader` cannot receive the bought asset (`CannotReceive`)
     pub fn crossfill(
         e: Env,
@@ -409,6 +414,7 @@ impl Axis {
     ///
     /// If the contract is frozen
     /// If `path` is empty or an amount is not positive
+    /// If the contract cannot hold an asset of the path (`IntermediaryCannotReceive`)
     /// If the route cannot satisfy the selling/buying amount (`NotFilled`)
     /// If the trader cannot pay for the fills, or cannot receive `buying`
     #[allow(clippy::too_many_arguments)]
@@ -435,6 +441,13 @@ impl Axis {
         }
 
         let axis = e.current_contract_address();
+        //every hop's asset passes through the contract, the trader gets the last one in one transfer:
+        //an asset requiring issuer authorization cannot be routed until the issuer authorizes the contract
+        for i in 0..hops {
+            if !order::can_receive(&e, &path.get(i).unwrap().asset, &axis) {
+                e.panic_with_error(OrderbookError::IntermediaryCannotReceive);
+            }
+        }
         let sell_asset = |i: u32| {
             if i == 0 {
                 selling.clone()
@@ -540,7 +553,7 @@ impl Axis {
                 None,
                 &mut dispatcher,
             );
-            let (sold, bought) = dispatcher.settle();
+            let (sold, bought, _) = dispatcher.settle();
             if sold != planned_sold || bought != planned_bought {
                 e.panic_with_error(OrderbookError::NotFilled);
             }
@@ -597,6 +610,7 @@ impl Axis {
     /// # Panics
     ///
     /// If `amount` is invalid
+    /// If `selling` equals `buying` (`InvalidMatch`)
     /// If the market does not exist and the amount is below the market listing fee (`InvalidAmount`)
     /// If neither market asset is quoted by the oracle (`AssetsNotVerifiedByOracle`)
     /// If the contract is frozen
@@ -612,6 +626,9 @@ impl Axis {
         admin::require_not_frozen(&e);
         if amount <= 0 {
             e.panic_with_error(OrderbookError::InvalidAmount);
+        }
+        if selling == buying {
+            e.panic_with_error(OrderbookError::InvalidMatch);
         }
         market::fund(&e, &sponsor, &selling, &buying, amount)
     }
@@ -632,7 +649,7 @@ impl Axis {
         admin::set_frozen(&e, blocked);
     }
 
-    /// Hand the safety admin role over to another account.
+    /// Transfer the safety admin role over to another account.
     ///
     /// # Arguments
     ///
@@ -678,5 +695,38 @@ impl Axis {
         admin::require_safety_admin(&e);
         bump_contract(&e, USER_BUMP_DAYS);
         admin::set_min_trade_size(&e, minimum);
+    }
+
+    /// Set the days of price feeds a new market must provision.
+    ///
+    /// # Arguments
+    ///
+    /// * `days` - Days of price feeds the market listing fee buys
+    ///
+    /// # Panics
+    ///
+    /// If the call is not authorized by the safety admin
+    /// If `days` exceeds 255 (`InvalidAmount`)
+    /// If the oracle charges no daily fee (`InvalidOracleConfig`)
+    pub fn set_listing_min_days(e: Env, days: u32) {
+        admin::require_safety_admin(&e);
+        bump_contract(&e, USER_BUMP_DAYS);
+        admin::set_listing_min_days(&e, days);
+    }
+
+    /// Set the average expected ledger close time.
+    ///
+    /// # Arguments
+    ///
+    /// * `ledger_time` - Ledger close time in seconds
+    ///
+    /// # Panics
+    ///
+    /// If the call is not authorized by the safety admin
+    /// If `ledger_time` is zero or exceeds 20 seconds (`InvalidAmount`)
+    pub fn set_ledger_time(e: Env, ledger_time: u32) {
+        admin::require_safety_admin(&e);
+        bump_contract(&e, USER_BUMP_DAYS);
+        admin::set_ledger_time(&e, ledger_time);
     }
 }

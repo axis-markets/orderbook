@@ -1,11 +1,12 @@
 //! Market creation, oracle verification and provisioning.
 extern crate std;
-use super::mock_oracle::MockOracle;
+use super::mock_oracle::{MockOracle, MockOracleClient};
+use super::mock_token::{MockToken, MockTokenClient};
 use super::setup::{
     actor, advance, balance, code, fake_asset, fund, fund_xrf, list_asset, no_orders,
-    oracle_address, oracle_client, register_axis, remove_orders, safety_admin, setup_oracle,
-    setup_test, store_order, trade, try_trade, xrf, MARKET_LISTING_FEE, MIN_TRADE_SIZE,
-    ORACLE_DAILY_FEE, ORACLE_DECIMALS, START_TIMESTAMP, UNIT_PRICE,
+    oracle_address, oracle_client, register_axis, register_oracle, remove_orders, safety_admin,
+    setup_oracle, setup_test, store_order, trade, try_trade, xrf, MARKET_LISTING_FEE,
+    MIN_TRADE_SIZE, ORACLE_DAILY_FEE, ORACLE_DECIMALS, START_TIMESTAMP, UNIT_PRICE,
 };
 use crate::events::MarketRefreshEvent;
 use crate::market::{canonical, DataKey};
@@ -67,7 +68,7 @@ fn test_constructor_stores_config() {
 #[should_panic(expected = "#723")]
 fn test_constructor_rejects_oracle_with_too_many_decimals() {
     let (e, _, _, _, _) = setup_test();
-    let oracle = e.register(MockOracle, (xrf(&e), 31u32, ORACLE_DAILY_FEE));
+    let oracle = e.register(MockOracle, (xrf(&e), 25u32, ORACLE_DAILY_FEE));
     e.register(Axis, (safety_admin(&e), oracle, MIN_TRADE_SIZE));
 }
 
@@ -118,12 +119,12 @@ fn test_subsidize_opens_a_market() {
 
     // market record for the pair, both sides quoted by the oracle
     let market = client.market(&usd, &eur).unwrap();
-    let (a, b) = canonical(&usd, &eur);
-    assert_eq!(market.a.asset, a);
-    assert_eq!(market.b.asset, b);
-    assert!(market.a.listed && market.b.listed);
-    assert_eq!(market.a.decimals, 7);
-    assert_eq!(market.b.decimals, 7);
+    let (base, quote) = canonical(&usd, &eur);
+    assert_eq!(market.base.asset, base);
+    assert_eq!(market.quote.asset, quote);
+    assert!(market.base.listed && market.quote.listed);
+    assert_eq!(market.base.decimals, 7);
+    assert_eq!(market.quote.decimals, 7);
     assert_eq!(market.created, START_TIMESTAMP);
 
     // exactly `amount` was burned: the listing fee, then the rest as a subsidy
@@ -201,6 +202,20 @@ fn test_limit_order_requires_an_open_market() {
         Some(721)
     );
     assert!(client.market(&usd, &eur).is_none());
+    assert_eq!(xrf_balance(&e, &trader), xrf_before);
+}
+
+#[test]
+fn test_subsidize_rejects_the_same_asset_on_both_sides() {
+    let (e, trader, _, usd, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+    let xrf_before = xrf_balance(&e, &trader);
+
+    assert_eq!(
+        code(client.try_subsidize(&trader, &usd, &usd, &MARKET_LISTING_FEE)),
+        Some(704)
+    );
+    assert!(client.market(&usd, &usd).is_none());
     assert_eq!(xrf_balance(&e, &trader), xrf_before);
 }
 
@@ -399,7 +414,93 @@ fn test_subsidize_invalid_amount() {
     let axis = register_axis(&e);
     let client = AxisClient::new(&e, &axis);
     create_sell_order(&client, &trader, 1000, &usd, &eur);
+    client.subsidize(&trader, &usd, &eur, &-1);
+}
+#[test]
+#[should_panic(expected = "#706")]
+fn test_subsidize_zero_amount() {
+    let (e, trader, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    create_sell_order(&client, &trader, 1000, &usd, &eur);
     client.subsidize(&trader, &usd, &eur, &0);
+}
+
+#[test]
+fn test_subsidize_zero_amount_opens_nothing_while_a_fee_is_due() {
+    let (e, _, _, usd, eur) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+    let sponsor = Address::generate(&e);
+
+    assert_eq!(
+        code(client.try_subsidize(&sponsor, &usd, &eur, &0)),
+        Some(706)
+    );
+    assert!(client.market(&usd, &eur).is_none());
+}
+
+/// Token with `decimals` quoted by the oracle at 1 USD per whole token
+fn token_with_decimals(e: &Env, decimals: u32) -> Address {
+    let token = e.register(MockToken, ());
+    MockTokenClient::new(e, &token).set_decimals(&decimals);
+    list_asset(e, &token, 10i128.pow(ORACLE_DECIMALS));
+    token
+}
+
+#[test]
+fn test_asset_beyond_the_decimals_cap_counts_as_unlisted() {
+    // 14 oracle decimals and 24 token decimals exceed the 37 the valuation can handle: the oracle
+    // quotes the token, but the market treats it as unlisted, tracks only USD and opens anyway
+    let (e, trader, _, usd, _) = setup_test();
+    let token = token_with_decimals(&e, 24);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+
+    let ttls = client.subsidize(&trader, &usd, &token, &MARKET_LISTING_FEE);
+    let market = client.market(&usd, &token).unwrap();
+    assert!(market.side(&usd).listed);
+    assert!(!market.side(&token).listed);
+    assert_eq!(market.side(&token).decimals, 0);
+    let days = MARKET_LISTING_FEE / ORACLE_DAILY_FEE;
+    assert_eq!(
+        ttls,
+        Vec::from_array(&e, [START_TIMESTAMP + days as u64 * 86_400])
+    );
+    assert_eq!(tracked_until(&e, &axis, &token), 0);
+
+    // with the token unlisted on both sides of the pair, nothing can value the market
+    let other = token_with_decimals(&e, 30);
+    assert_eq!(
+        code(client.try_subsidize(&trader, &token, &other, &MARKET_LISTING_FEE)),
+        Some(721)
+    );
+}
+
+#[test]
+fn test_oracle_switch_delists_assets_beyond_the_decimals_cap() {
+    // A 23-decimal token sits exactly at the cap under 14 oracle decimals. An oracle quoting with
+    // 15 decimals pushes it over: re-checking the market drops it from the valuation instead of
+    // failing, and the market keeps working on the USD side
+    let (e, trader, _, usd, _) = setup_test();
+    let token = token_with_decimals(&e, 23);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    client.subsidize(&trader, &usd, &token, &MARKET_LISTING_FEE);
+    assert!(client.market(&usd, &token).unwrap().side(&token).listed);
+
+    let successor = register_oracle(&e, ORACLE_DECIMALS + 1);
+    let successor_client = MockOracleClient::new(&e, &successor);
+    for asset in [&usd, &token] {
+        successor_client.add_asset(&Asset::Stellar(asset.clone()), &0);
+    }
+    client.set_oracle(&successor);
+    let market = client.requote(&usd, &token).unwrap();
+    assert!(market.side(&usd).listed);
+    assert!(!market.side(&token).listed);
+
+    // provisioning on the successor covers USD alone
+    let ttls = client.subsidize(&trader, &usd, &token, &(2 * ORACLE_DAILY_FEE));
+    assert_eq!(ttls.len(), 1);
 }
 
 #[test]
@@ -501,8 +602,8 @@ fn subsidize_with_auth(
 ) -> Vec<u64> {
     let client = AxisClient::new(e, axis);
     let oracle = oracle_address(e);
-    let (a, b) = canonical(usd, eur);
-    let assets = Vec::from_array(e, [Asset::Stellar(a), Asset::Stellar(b)]);
+    let (base, quote) = canonical(usd, eur);
+    let assets = Vec::from_array(e, [Asset::Stellar(base), Asset::Stellar(quote)]);
     let subsidy = ORACLE_DAILY_FEE * 2;
     let amount = MARKET_LISTING_FEE + subsidy;
     let track_args = |fee: &i128| (sponsor, axis, &assets, fee).into_val(e);
@@ -639,8 +740,8 @@ fn test_requote_picks_up_a_newly_listed_asset() {
     list_asset(&e, &gbp, UNIT_PRICE);
     advance(&e, 60);
     let after = client.requote(&usd, &gbp).unwrap();
-    let (a, b) = canonical(&usd, &gbp);
-    let refresh = MarketRefreshEvent { a, b };
+    let (base, quote) = canonical(&usd, &gbp);
+    let refresh = MarketRefreshEvent { base, quote };
     assert!(e
         .events()
         .all()
@@ -665,13 +766,13 @@ fn test_requote_drops_a_delisted_asset() {
 
     delist(&e, &eur);
     let after = client.requote(&usd, &eur).unwrap();
-    let (a, b) = canonical(&usd, &eur);
+    let (base, quote) = canonical(&usd, &eur);
     assert!(e
         .events()
         .all()
         .filter_by_contract(&axis)
         .events()
-        .contains(&MarketRefreshEvent { a, b }.to_xdr(&e, &axis)));
+        .contains(&MarketRefreshEvent { base, quote }.to_xdr(&e, &axis)));
 
     assert!(after.side(&usd).listed);
     assert!(!after.side(&eur).listed);

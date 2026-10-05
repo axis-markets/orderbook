@@ -1,6 +1,7 @@
 use super::setup::{
-    actor, approve, assert_no_custody, balance, code, fake_asset, fund, register_axis, setup_test,
-    store_order, try_trade,
+    actor, approve, assert_no_custody, authorize, balance, code, fake_asset,
+    fake_asset_auth_required, fund, list_asset, register_axis, setup_test, store_order, try_trade,
+    UNIT_PRICE,
 };
 use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, trade::TradeStep, AxisClient};
@@ -404,4 +405,164 @@ fn test_swap_routes_around_an_unbacked_maker() {
     assert_eq!(client.order(&unbacked_order).unwrap().amount, 833);
     assert!(client.order(&backed_order).is_none());
     assert_no_custody(&e, &contract_address, &[&usd, &eur]);
+}
+
+#[test]
+fn test_swap_through_an_auth_required_asset_needs_the_contract_authorized() {
+    // USD -> R -> GBP, where the issuer of R must authorize every holder. The contract holds R
+    // between the hops, and a single hop into R hands it to the trader in one transfer from the
+    // contract, so both fail up front with their own code until the issuer authorizes the contract
+    let (e, trader, issuer, usd, _) = setup_test();
+    let regulated = fake_asset_auth_required(&e, &issuer);
+    let gbp = fake_asset(&e, &issuer);
+    list_asset(&e, &regulated, UNIT_PRICE);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let maker1 = actor(&e);
+    let maker2 = actor(&e);
+    for holder in [&trader, &maker1, &maker2] {
+        authorize(&e, &regulated, holder);
+    }
+    fund(&e, &regulated, &axis, &maker1, 2000);
+    fund(&e, &gbp, &axis, &maker2, 1000);
+    fund(&e, &usd, &axis, &trader, 2000);
+    let order1 = store_order(&client, &maker1, 2000, &regulated, &usd, PRECISION);
+    let order2 = store_order(&client, &maker2, 1000, &gbp, &regulated, PRECISION);
+    let path = two_hop_path(&e, &regulated, &gbp, order1, order2);
+    let swap = |path: &Vec<TradeStep>| {
+        client.try_swap(
+            &TradeDirection::Sell,
+            &trader,
+            &usd,
+            &1000,
+            &1000,
+            path,
+            &None,
+        )
+    };
+
+    assert_eq!(code(swap(&path)), Some(712));
+    assert_eq!(balance(&e, &usd, &trader), 2000);
+    assert_eq!(client.order(&order1).unwrap().amount, 2000);
+
+    let single_hop = Vec::from_array(
+        &e,
+        [TradeStep {
+            asset: regulated.clone(),
+            orders: Vec::from_array(&e, [order1]),
+        }],
+    );
+    assert_eq!(code(swap(&single_hop)), Some(712));
+
+    authorize(&e, &regulated, &axis);
+    assert_eq!(swap(&single_hop), Ok(Ok((1000, 1000))));
+    assert_eq!(balance(&e, &regulated, &trader), 1000);
+    assert_eq!(swap(&path), Ok(Ok((1000, 1000))));
+    assert_eq!(balance(&e, &gbp, &trader), 1000);
+    assert_eq!(balance(&e, &regulated, &maker2), 1000);
+    assert!(client.order(&order1).is_none());
+    assert_no_custody(&e, &axis, &[&usd, &regulated, &gbp]);
+}
+
+/// USD -> EUR -> USD -> EUR route listing `eur_order` in the first and the last hop
+fn cyclic_path(
+    e: &Env,
+    usd: &Address,
+    eur: &Address,
+    eur_order: u128,
+    usd_order: u128,
+) -> Vec<TradeStep> {
+    let step = |asset: &Address, order: u128| TradeStep {
+        asset: asset.clone(),
+        orders: Vec::from_array(e, [order]),
+    };
+    Vec::from_array(
+        e,
+        [
+            step(eur, eur_order),
+            step(usd, usd_order),
+            step(eur, eur_order),
+        ],
+    )
+}
+
+#[test]
+fn test_swap_cyclic_path_reuses_a_maker_order() {
+    // The plan reads every hop against the book as it is, the execution against the book the
+    // earlier hops left behind. With room for both hops in the shared EUR order the route settles
+    // exactly as planned; otherwise the last hop settles short, the swap fails `NotFilled` and
+    // nothing moves. The contract keeps nothing either way
+    let (e, trader, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let eur_maker = actor(&e);
+    let usd_maker = actor(&e);
+    fund(&e, &eur, &axis, &eur_maker, 250);
+    fund(&e, &usd, &axis, &usd_maker, 1000);
+    fund(&e, &usd, &axis, &trader, 1000);
+    let eur_order = store_order(&client, &eur_maker, 250, &eur, &usd, PRECISION);
+    let usd_order = store_order(&client, &usd_maker, 1000, &usd, &eur, PRECISION);
+    let path = cyclic_path(&e, &usd, &eur, eur_order, usd_order);
+    let swap = |amount: i128| {
+        client.try_swap(
+            &TradeDirection::Sell,
+            &trader,
+            &usd,
+            &amount,
+            &amount,
+            &path,
+            &None,
+        )
+    };
+
+    // the EUR order delivers 100 in the first hop and 100 more in the last one
+    assert_eq!(swap(100), Ok(Ok((100, 100))));
+    assert_eq!(client.order(&eur_order).unwrap().amount, 50);
+    assert_eq!(client.order(&usd_order).unwrap().amount, 900);
+    assert_eq!(balance(&e, &usd, &trader), 900);
+    assert_eq!(balance(&e, &eur, &trader), 100);
+    assert_eq!(balance(&e, &usd, &eur_maker), 200);
+    assert_no_custody(&e, &axis, &[&usd, &eur]);
+
+    // 50 EUR are left: each hop fits on its own, both together do not
+    assert_eq!(code(swap(40)), Some(709));
+    assert_eq!(client.order(&eur_order).unwrap().amount, 50);
+    assert_eq!(balance(&e, &usd, &trader), 900);
+    assert_eq!(balance(&e, &eur, &trader), 100);
+    assert_no_custody(&e, &axis, &[&usd, &eur]);
+}
+
+#[test]
+fn test_swap_cyclic_path_respects_the_maker_backing() {
+    // The shared EUR order is large, but its maker holds only 150 EUR: the plan admits each hop on
+    // its own, the last hop finds the backing spent by the first one and the swap fails
+    let (e, trader, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let eur_maker = actor(&e);
+    let usd_maker = actor(&e);
+    fund(&e, &eur, &axis, &eur_maker, 1000);
+    fund(&e, &usd, &axis, &usd_maker, 1000);
+    fund(&e, &usd, &axis, &trader, 1000);
+    let eur_order = store_order(&client, &eur_maker, 1000, &eur, &usd, PRECISION);
+    let usd_order = store_order(&client, &usd_maker, 1000, &usd, &eur, PRECISION);
+    soroban_sdk::token::Client::new(&e, &eur).transfer(&eur_maker, &usd_maker, &850);
+
+    let path = cyclic_path(&e, &usd, &eur, eur_order, usd_order);
+    assert_eq!(
+        code(client.try_swap(
+            &TradeDirection::Sell,
+            &trader,
+            &usd,
+            &100,
+            &100,
+            &path,
+            &None
+        )),
+        Some(709)
+    );
+    assert_eq!(client.order(&eur_order).unwrap().amount, 1000);
+    assert_eq!(balance(&e, &usd, &trader), 1000);
+    assert_eq!(balance(&e, &eur, &eur_maker), 150);
+    assert_no_custody(&e, &axis, &[&usd, &eur]);
 }

@@ -1,11 +1,13 @@
 //! `Sell` rounding leftovers. Selling into an order priced above one unit of the taker's asset per
 //! unit of the maker's asset usually leaves part of the input unspendable: it cannot buy a single
-//! whole unit. A `FillOrKill` trade or a `Sell` swap counts such a leftover as executed and the
-//! trader keeps it; a real liquidity shortage still fails.
+//! whole unit. A `FillOrKill` trade or a `Sell` swap counts a leftover that cannot buy a single unit
+//! at the highest price it filled at as executed, and the trader keeps it; a real liquidity
+//! shortage still fails, however loose the limit.
 use super::setup::{
-    actor, assert_no_custody, balance, code, fake_asset, fund, register_axis, setup_test,
-    store_order, trade, try_trade,
+    actor, assert_no_custody, balance, code, fake_asset, fund, no_orders, register_axis,
+    setup_test, store_order, trade, try_trade,
 };
+use crate::math::MIN_PRICE;
 use crate::order::{OrderKind, TradeDirection};
 use crate::trade::TradeStep;
 use crate::{orderbook::PRECISION, AxisClient};
@@ -117,6 +119,54 @@ fn test_fill_or_kill_still_fails_on_missing_liquidity() {
     assert_eq!(balance(&e, &usd, &taker), 10_000_000);
     assert_eq!(balance(&e, &eur, &maker), 500);
     assert_eq!(client.order(&id).unwrap().amount, 500);
+}
+
+#[test]
+fn test_fill_or_kill_at_any_price_still_fails_on_missing_liquidity() {
+    // The lowest limit accepts any price, so at that limit the 250 USD left over are worth less
+    // than one EUR, yet they would buy another 166 EUR at the price the order filled at
+    let (e, _, _, usd, eur) = setup_test();
+    let (client, _, maker, taker, id) = eur_seller(&e, &usd, &eur, 500, ONE_AND_HALF);
+
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::FillOrKill,
+            &taker,
+            1000,
+            &usd,
+            &eur,
+            MIN_PRICE,
+            &Vec::from_array(&e, [id]),
+        ),
+        Some(709)
+    );
+    assert_eq!(balance(&e, &usd, &taker), 10_000_000);
+    assert_eq!(balance(&e, &eur, &maker), 500);
+    assert_eq!(client.order(&id).unwrap().amount, 500);
+}
+
+#[test]
+fn test_fill_or_kill_without_fills_is_not_executed() {
+    // with nothing filled there is no price to measure the leftover against: not executed
+    let (e, _, _, usd, eur) = setup_test();
+    let (client, _, _, taker, _) = eur_seller(&e, &usd, &eur, 500, ONE_AND_HALF);
+
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::FillOrKill,
+            &taker,
+            1000,
+            &usd,
+            &eur,
+            MIN_PRICE,
+            &no_orders(&e),
+        ),
+        Some(709)
+    );
 }
 
 #[test]

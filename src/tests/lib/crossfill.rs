@@ -1,6 +1,7 @@
+use super::mock_token::{MockToken, MockTokenClient};
 use super::setup::{
-    actor, approve, assert_no_custody, balance, code, fund, no_orders, register_axis, setup_test,
-    store_order,
+    actor, approve, assert_no_custody, authorize, balance, code, fake_asset_auth_required, fund,
+    list_asset, no_orders, register_axis, setup_test, store_order, UNIT_PRICE,
 };
 use crate::events::{OrderSkippedEvent, TradeEvent};
 use crate::{orderbook::PRECISION, AxisClient};
@@ -221,6 +222,51 @@ fn test_crossfill_skips_unbacked_taker_order() {
 }
 
 #[test]
+fn test_crossfill_through_an_auth_required_asset_needs_the_contract_authorized() {
+    // The makers deliver the bought asset to the contract, which pays the owner and the trader out
+    // of it. An asset whose issuer must authorize every holder cannot pass through the contract
+    // until the issuer authorizes it: the call fails with its own code instead of `CannotReceive`,
+    // which would blame the trader
+    let (e, _, issuer, usd, _) = setup_test();
+    let regulated = fake_asset_auth_required(&e, &issuer);
+    list_asset(&e, &regulated, UNIT_PRICE);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let owner = actor(&e);
+    let maker = actor(&e);
+    let arbitrageur = actor(&e);
+    for holder in [&owner, &maker, &arbitrageur] {
+        authorize(&e, &regulated, holder);
+    }
+    fund(&e, &usd, &axis, &owner, 1000);
+    fund(&e, &regulated, &axis, &maker, 1000);
+    let taker_order_id = store_order(&client, &owner, 1000, &usd, &regulated, PRECISION);
+    let maker_order_id = store_order(&client, &maker, 1000, &regulated, &usd, PRECISION);
+    let orders = Vec::from_array(&e, [maker_order_id]);
+
+    assert_eq!(
+        code(client.try_crossfill(&arbitrageur, &taker_order_id, &orders)),
+        Some(712)
+    );
+    assert_eq!(client.order(&taker_order_id).unwrap().amount, 1000);
+    assert_eq!(client.order(&maker_order_id).unwrap().amount, 1000);
+
+    // once the issuer authorizes the contract, a trader the issuer did not authorize is the one
+    // reported, and an authorized trader crosses the orders
+    authorize(&e, &regulated, &axis);
+    let stranger = actor(&e);
+    assert_eq!(
+        code(client.try_crossfill(&stranger, &taker_order_id, &orders)),
+        Some(708)
+    );
+    let (sold, bought, profit) = client.crossfill(&arbitrageur, &taker_order_id, &orders);
+    assert_eq!((sold, bought, profit), (1000, 1000, 0));
+    assert_eq!(balance(&e, &regulated, &owner), 1000);
+    assert_eq!(balance(&e, &usd, &maker), 1000);
+    assert_no_custody(&e, &axis, &[&usd, &regulated]);
+}
+
+#[test]
 fn test_crossfill_requires_trader_auth() {
     let (e, _trader, _issuer, usd, eur) = setup_test();
     let (client, arbitrageur, _taker_owner, _maker, taker_order_id, maker_order_id) =
@@ -238,4 +284,57 @@ fn test_crossfill_requires_trader_auth() {
     // nothing changed on the book
     assert_eq!(client.order(&taker_order_id).unwrap().amount, 1000);
     assert_eq!(client.order(&maker_order_id).unwrap().amount, 400);
+}
+
+#[test]
+fn test_crossfill_fails_on_a_maker_who_cannot_be_paid_and_keeps_the_owner_allowance() {
+    // The owner sells a token whose holders can be capped like a classic trustline. The first
+    // maker's line for it is full, so paying them fails after their USD reached the contract. The
+    // owner did not sign this call, so the contract never probes their allowance to tell the
+    // maker's fault from the owner's: the call fails with the token's own error, the owner's
+    // allowance stays exactly as granted, and the caller crosses the second maker alone
+    let (e, _, _, usd, _) = setup_test();
+    let capped = e.register(MockToken, ());
+    list_asset(&e, &capped, UNIT_PRICE);
+    let capped_client = MockTokenClient::new(&e, &capped);
+    let capped_token = soroban_sdk::token::Client::new(&e, &capped);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let owner = actor(&e);
+    let bad = actor(&e);
+    let good = actor(&e);
+    let arbitrageur = actor(&e);
+    fund(&e, &capped, &axis, &owner, 2000);
+    approve(&e, &capped, &axis, &owner, 2000);
+    fund(&e, &usd, &axis, &bad, 1000);
+    fund(&e, &usd, &axis, &good, 1000);
+    let taker_order_id = store_order(&client, &owner, 2000, &capped, &usd, PRECISION);
+    let bad_order = store_order(&client, &bad, 1000, &usd, &capped, PRECISION);
+    let good_order = store_order(&client, &good, 1000, &usd, &capped, PRECISION);
+    capped_client.set_limit(&bad, &0);
+
+    let orders = Vec::from_array(&e, [bad_order, good_order]);
+    assert_eq!(
+        code(client.try_crossfill(&arbitrageur, &taker_order_id, &orders)),
+        Some(11)
+    );
+    assert_eq!(capped_token.allowance(&owner, &axis), 2000);
+    assert_eq!(client.order(&taker_order_id).unwrap().amount, 2000);
+    assert_eq!(client.order(&bad_order).unwrap().amount, 1000);
+    assert_eq!(client.order(&good_order).unwrap().amount, 1000);
+    assert_eq!(balance(&e, &usd, &bad), 1000);
+    assert_eq!(balance(&e, &capped, &owner), 2000);
+    assert_no_custody(&e, &axis, &[&usd, &capped]);
+
+    let orders = Vec::from_array(&e, [good_order]);
+    let (sold, bought, profit) = client.crossfill(&arbitrageur, &taker_order_id, &orders);
+    assert_eq!((sold, bought, profit), (1000, 1000, 0));
+    assert_eq!(capped_token.allowance(&owner, &axis), 1000);
+    assert_eq!(client.order(&taker_order_id).unwrap().amount, 1000);
+    assert_eq!(client.order(&bad_order).unwrap().amount, 1000);
+    assert!(client.order(&good_order).is_none());
+    assert_eq!(balance(&e, &usd, &owner), 1000);
+    assert_eq!(balance(&e, &capped, &owner), 1000);
+    assert_eq!(balance(&e, &capped, &good), 1000);
+    assert_no_custody(&e, &axis, &[&usd, &capped]);
 }

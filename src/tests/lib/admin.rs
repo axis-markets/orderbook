@@ -1,10 +1,12 @@
-//! Safety admin controls: the emergency switch, the role handover and the minimum trade size.
+//! Safety admin controls: the emergency switch, the role handover, the minimum trade size, the
+//! listing days and the ledger time.
 extern crate std;
 use super::mock_oracle::MockOracleClient;
 use super::setup::{
-    actor, approval, code, config, fund, no_orders, open_market, oracle_address, order_update,
-    register_axis, register_oracle, removal, safety_admin, setup_test, store_order, try_trade,
-    try_update_one, MARKET_LISTING_FEE, MIN_TRADE_SIZE, ORACLE_DAILY_FEE, ORACLE_DECIMALS,
+    actor, approval, code, config, fund, no_orders, open_market, oracle_address, oracle_client,
+    order_update, register_axis, register_oracle, removal, safety_admin, setup_test, store_order,
+    try_trade, try_update_one, LISTING_MIN_DAYS, MARKET_LISTING_FEE, MIN_TRADE_SIZE,
+    ORACLE_DAILY_FEE, ORACLE_DECIMALS,
 };
 use crate::events::{ConfigChangedEvent, FreezeEvent};
 use crate::market::{Config, DataKey};
@@ -552,11 +554,153 @@ fn test_set_oracle_rejects_too_many_price_decimals() {
 
     //too many price decimals
     assert_eq!(
-        code(client.try_set_oracle(&register_oracle(&e, 31))),
+        code(client.try_set_oracle(&register_oracle(&e, 25))),
         Some(723)
     );
-
     assert_eq!(client.config().oracle, oracle_address(&e));
+
+    //24 is the most accepted
+    let successor = register_oracle(&e, 24);
+    client.set_oracle(&successor);
+    assert_eq!(client.config().oracle, successor);
+}
+
+#[test]
+fn test_set_oracle_keeps_the_listing_days() {
+    let (e, _, _, _, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+    client.set_listing_min_days(&10);
+    //the successor charges 2 XRF a day per asset: new markets cost 10 days of that
+    let successor = register_oracle(&e, ORACLE_DECIMALS);
+    MockOracleClient::new(&e, &successor).set_daily_fee(&(2 * ORACLE_DAILY_FEE));
+
+    client.set_oracle(&successor);
+    assert_eq!(client.config().listing_min_days, 10);
+    assert_eq!(
+        client.config().market_listing_fee,
+        2 * ORACLE_DAILY_FEE * 10
+    );
+}
+
+#[test]
+fn test_set_listing_min_days_re_derives_the_listing_fee() {
+    let (e, _, _, _, _) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+
+    client.set_listing_min_days(&30);
+    let expected = Config {
+        listing_min_days: 30,
+        market_listing_fee: 30 * ORACLE_DAILY_FEE,
+        ..config(&e)
+    };
+    assert_eq!(
+        e.events().all().filter_by_contract(&axis),
+        [ConfigChangedEvent {
+            config: expected.clone()
+        }
+        .to_xdr(&e, &axis)]
+    );
+    assert_eq!(client.config(), expected);
+
+    //the oracle's daily fee is read again: a fee change on the oracle is picked up
+    oracle_client(&e).set_daily_fee(&(3 * ORACLE_DAILY_FEE));
+    client.set_listing_min_days(&LISTING_MIN_DAYS);
+    assert_eq!(
+        client.config().market_listing_fee,
+        3 * ORACLE_DAILY_FEE * LISTING_MIN_DAYS as i128
+    );
+
+    //zero switches the fee off
+    client.set_listing_min_days(&0);
+    assert_eq!(client.config().market_listing_fee, 0);
+}
+
+#[test]
+fn test_set_listing_min_days_rejects_more_than_255() {
+    let (e, _, _, _, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+
+    assert_eq!(code(client.try_set_listing_min_days(&256)), Some(706));
+    assert_eq!(client.config(), config(&e));
+    client.set_listing_min_days(&255);
+    assert_eq!(client.config().market_listing_fee, 255 * ORACLE_DAILY_FEE);
+}
+
+#[test]
+fn test_set_listing_min_days_requires_safety_admin() {
+    let (e, _, _, _, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+
+    e.set_auths(&[]);
+    assert!(
+        client.try_set_listing_min_days(&0).is_err(),
+        "set_listing_min_days must fail without safety admin authorization"
+    );
+
+    e.mock_all_auths();
+    assert_eq!(client.config(), config(&e));
+}
+
+#[test]
+fn test_set_ledger_time_updates_config() {
+    let (e, _, _, _, _) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+
+    client.set_ledger_time(&4);
+    let expected = Config {
+        ledger_time: 4,
+        ..config(&e)
+    };
+    assert_eq!(
+        e.events().all().filter_by_contract(&axis),
+        [ConfigChangedEvent {
+            config: expected.clone()
+        }
+        .to_xdr(&e, &axis)]
+    );
+    assert_eq!(client.config(), expected);
+}
+
+#[test]
+fn test_set_ledger_time_rejects_zero_and_more_than_20() {
+    let (e, _, _, _, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+
+    assert_eq!(code(client.try_set_ledger_time(&0)), Some(706));
+    assert_eq!(code(client.try_set_ledger_time(&21)), Some(706));
+    assert_eq!(client.config(), config(&e));
+    client.set_ledger_time(&20);
+    assert_eq!(client.config().ledger_time, 20);
+}
+
+#[test]
+fn test_set_ledger_time_requires_safety_admin() {
+    let (e, _, _, _, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+
+    e.set_auths(&[]);
+    assert!(
+        client.try_set_ledger_time(&4).is_err(),
+        "set_ledger_time must fail without safety admin authorization"
+    );
+
+    e.mock_all_auths();
+    assert_eq!(client.config(), config(&e));
+}
+
+#[test]
+fn test_configuration_setters_work_while_frozen() {
+    let (e, _, _, _, _) = setup_test();
+    let client = AxisClient::new(&e, &register_axis(&e));
+
+    client.freeze(&true);
+    client.set_listing_min_days(&7);
+    client.set_ledger_time(&6);
+    assert_eq!(client.config().listing_min_days, 7);
+    assert_eq!(client.config().ledger_time, 6);
+    assert!(client.frozen());
 }
 
 #[test]

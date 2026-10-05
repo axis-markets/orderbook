@@ -17,8 +17,14 @@ pub const TOKEN_DECIMALS: u32 = 7;
 pub const UNIT_PRICE: i128 = 10i128.pow(ORACLE_DECIMALS + TOKEN_DECIMALS);
 /// Mock oracle daily fee per asset (1 XRF)
 pub const ORACLE_DAILY_FEE: i128 = 1_0000000;
+/// Days of price feeds the market listing fee buys by default
+pub const LISTING_MIN_DAYS: u32 = crate::market::DEFAULT_LISTING_MIN_DAYS;
 /// XRF burned to open a market, derived by the contract from the oracle's daily fee (90 XRF)
-pub const MARKET_LISTING_FEE: i128 = ORACLE_DAILY_FEE * crate::market::LISTING_FEE_DAYS;
+pub const MARKET_LISTING_FEE: i128 = ORACLE_DAILY_FEE * LISTING_MIN_DAYS as i128;
+/// Ledger close time the contract starts with (seconds)
+pub const LEDGER_TIME: u32 = 5;
+/// Ledgers per day at the default ledger close time
+pub const LPD: u32 = 86_400 / LEDGER_TIME;
 /// Initial ledger timestamp
 pub const START_TIMESTAMP: u64 = 1_700_000_000;
 /// Minimum trade size configured in tests (1 USD, 7 decimals)
@@ -50,6 +56,19 @@ pub fn fake_asset_revocable(env: &Env, issuer: &Address) -> Address {
     let sac = env.register_stellar_asset_contract_v2(issuer.clone());
     sac.issuer().set_flag(IssuerFlags::RevocableFlag);
     sac.address()
+}
+
+/// Create a fake Stellar asset whose issuer must authorize every holder (`AUTH_REQUIRED`), the
+/// AXIS contract included
+pub fn fake_asset_auth_required(env: &Env, issuer: &Address) -> Address {
+    let sac = env.register_stellar_asset_contract_v2(issuer.clone());
+    sac.issuer().set_flag(IssuerFlags::RequiredFlag);
+    sac.address()
+}
+
+/// The issuer lets `holder` hold an `AUTH_REQUIRED` asset
+pub fn authorize(e: &Env, asset: &Address, holder: &Address) {
+    token::StellarAssetClient::new(e, asset).set_authorized(holder, &true);
 }
 
 /// Oracle contract address
@@ -268,15 +287,15 @@ pub fn try_trade(
 
 /// Open the market for the pair: a fresh XRF holder subsidizes it with exactly the market
 /// listing fee, which buys 90 days of price feeds split across the listed assets
-pub fn open_market(client: &AxisClient, a: &Address, b: &Address) {
+pub fn open_market(client: &AxisClient, base: &Address, quote: &Address) {
     let sponsor = actor(&client.env);
-    client.subsidize(&sponsor, a, b, &MARKET_LISTING_FEE);
+    client.subsidize(&sponsor, base, quote, &MARKET_LISTING_FEE);
 }
 
 /// Open the market for the pair unless it is already open
-pub fn ensure_market(client: &AxisClient, a: &Address, b: &Address) {
-    if client.market(a, b).is_none() {
-        open_market(client, a, b);
+pub fn ensure_market(client: &AxisClient, base: &Address, quote: &Address) {
+    if client.market(base, quote).is_none() {
+        open_market(client, base, quote);
     }
 }
 
@@ -347,9 +366,11 @@ pub fn mainnet_ttls(e: &Env) {
 pub fn config(e: &Env) -> Config {
     Config {
         oracle: oracle_address(e),
+        listing_min_days: LISTING_MIN_DAYS,
         market_listing_fee: MARKET_LISTING_FEE,
         safety_admin: safety_admin(e),
         min_trade_size: MIN_TRADE_SIZE,
+        ledger_time: LEDGER_TIME,
     }
 }
 

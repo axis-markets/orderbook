@@ -1,9 +1,11 @@
 //! Minimum order size valuation and oracle price caching.
+use super::mock_oracle::MockOracleClient;
+use super::mock_token::{MockToken, MockTokenClient};
 use super::setup::{
-    actor, advance, clear_price, ensure_market, fake_asset, fund, no_orders, open_market,
-    oracle_address, oracle_client, order_update, register_axis, register_oracle, set_price,
-    setup_test, trade, try_trade, try_update_one, update_one, MIN_TRADE_SIZE, ORACLE_DAILY_FEE,
-    ORACLE_DECIMALS, START_TIMESTAMP, TOKEN_DECIMALS, UNIT_PRICE,
+    actor, advance, approval, clear_price, ensure_market, fake_asset, fund, list_asset,
+    max_live_until, no_orders, open_market, oracle_client, order_update, register_axis,
+    register_oracle, removal, set_price, setup_test, trade, try_trade, try_update_one, update_one,
+    MIN_TRADE_SIZE, ORACLE_DAILY_FEE, ORACLE_DECIMALS, START_TIMESTAMP, TOKEN_DECIMALS, UNIT_PRICE,
 };
 use crate::events::MarketRefreshEvent;
 use crate::market::canonical;
@@ -13,7 +15,7 @@ use crate::pricing::{PriceCache, MAX_PRICE_AGE};
 use crate::reflector_beam::Asset;
 use crate::AxisClient;
 use soroban_sdk::testutils::Events as _;
-use soroban_sdk::{Address, Env, Event, Vec};
+use soroban_sdk::{token, Address, Env, Event, Vec};
 
 /// Oracle price of 1 USD per whole token
 const ONE_USD: i128 = 10i128.pow(ORACLE_DECIMALS);
@@ -506,13 +508,62 @@ fn test_lapsed_access_fails_until_market_funded() {
 }
 
 #[test]
-fn test_price_cached_under_a_previous_oracle_is_not_reused() {
+fn test_oracle_with_the_same_decimals_keeps_the_cache() {
     let (e, trader, _, usd, eur) = setup_test();
     let axis = register_axis(&e);
     let client = AxisClient::new(&e, &axis);
     fund(&e, &usd, &axis, &trader, 10000);
+    let sell = |amount| {
+        try_limit(
+            &client,
+            TradeDirection::Sell,
+            &trader,
+            amount,
+            &usd,
+            &eur,
+            PRECISION,
+        )
+    };
 
-    //opening the market caches the USD price
+    //opening the market caches the USD price in the oracle decimals
+    assert_eq!(sell(1000), None);
+    let cached = cached_price(&e, &axis, &usd).unwrap();
+    assert_eq!(cached.decimals, ORACLE_DECIMALS);
+
+    //the successor quotes with the same decimals but has not been provisioned yet: the cached
+    //prices carry over and keep valuing orders in the meantime
+    let successor = register_oracle(&e, ORACLE_DECIMALS);
+    client.set_oracle(&successor);
+    assert_eq!(sell(1000), None);
+    assert_eq!(cached_price(&e, &axis, &usd).unwrap(), cached);
+
+    //the first quote fetched from the successor replaces the record: USD drops tenfold, so 1000
+    //stroops are worth 100 USD
+    let successor_client = MockOracleClient::new(&e, &successor);
+    for asset in [&usd, &eur] {
+        successor_client.add_asset(&Asset::Stellar(asset.clone()), &0);
+    }
+    advance(&e, 60);
+    successor_client.set_price(
+        &Asset::Stellar(usd.clone()),
+        &(UNIT_PRICE / 10),
+        &e.ledger().timestamp(),
+    );
+    client.subsidize(&trader, &usd, &eur, &(2 * ORACLE_DAILY_FEE));
+    assert_eq!(
+        cached_price(&e, &axis, &usd).unwrap().price,
+        UNIT_PRICE / 10
+    );
+    assert_eq!(sell(9), Some(720));
+    assert_eq!(sell(10), None);
+}
+
+#[test]
+fn test_oracle_with_other_decimals_drops_the_cache() {
+    let (e, trader, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    fund(&e, &usd, &axis, &trader, 10000);
     limit(
         &client,
         TradeDirection::Sell,
@@ -522,11 +573,10 @@ fn test_price_cached_under_a_previous_oracle_is_not_reused() {
         &eur,
         PRECISION,
     );
-    let cached: PriceCache = e.as_contract(&axis, || e.storage().temporary().get(&usd).unwrap());
-    assert_eq!(cached.oracle, oracle_address(&e));
 
-    //hand over to an oracle that quotes nothing: the stale record must not stand in for a quote
-    client.set_oracle(&register_oracle(&e, ORACLE_DECIMALS));
+    //prices quoted in 14 decimals mean nothing to an 18-decimal oracle: the records read as
+    //misses until the successor's own quotes are fetched
+    client.set_oracle(&register_oracle(&e, 18));
     assert_eq!(
         try_limit(
             &client,
@@ -539,6 +589,47 @@ fn test_price_cached_under_a_previous_oracle_is_not_reused() {
         ),
         Some(722)
     );
+}
+
+#[test]
+fn test_min_order_size_of_a_high_precision_token_is_exact() {
+    // A 23-decimal token under the 14-decimal oracle is at the decimals cap. The threshold for a
+    // 25 USD floor, 25 * 10^(14 + 23) in price units, is beyond i128 (any floor of 17 USD or more
+    // is), and so is the value of an order that meets it: both are compared exactly instead of
+    // failing with `Overflow`
+    let (e, trader, _, usd, _) = setup_test();
+    let token = e.register(MockToken, ());
+    let token_client = MockTokenClient::new(&e, &token);
+    token_client.set_decimals(&23);
+    //1 USD per whole token
+    list_asset(&e, &token, ONE_USD);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    client.set_floor(&(25 * MIN_TRADE_SIZE));
+    let whole = 10i128.pow(23);
+    token_client.mint(&trader, &(100 * whole));
+    token_client.approve(&trader, &axis, &i128::MAX, &max_live_until(&e));
+    open_market(&client, &token, &usd);
+    assert_eq!(
+        client.market(&token, &usd).unwrap().side(&token).decimals,
+        23
+    );
+
+    //a token base unit is worth 10^-16 USD base units: 10^7 / 10^23, in 18 decimals
+    let price = 100;
+    let sell = |amount| {
+        try_limit(
+            &client,
+            TradeDirection::Sell,
+            &trader,
+            amount,
+            &token,
+            &usd,
+            price,
+        )
+    };
+    assert_eq!(sell(25 * whole - 1), Some(720));
+    assert_eq!(sell(25 * whole), None);
 }
 
 #[test]
@@ -666,9 +757,9 @@ fn test_zero_min_trade_size_disables_the_check() {
 }
 
 #[test]
-fn test_update_on_a_fully_delisted_market_skips_the_floor() {
-    // A market whose assets the oracle no longer quotes accepts no new orders, but its orders
-    // stay manageable: an update is checked against the dust rule only
+fn test_update_on_a_fully_delisted_market_allows_only_removals() {
+    // A market whose assets the oracle no longer quotes takes no new liquidity: like a frozen
+    // contract, it lets owners remove their orders and change allowances, but not change orders
     let (e, trader, _, usd, eur) = setup_test();
     let axis = register_axis(&e);
     let client = AxisClient::new(&e, &axis);
@@ -693,7 +784,7 @@ fn test_update_on_a_fully_delisted_market_skips_the_floor() {
     oracle_client(&e).remove_asset(&Asset::Stellar(usd.clone()));
     oracle_client(&e).remove_asset(&Asset::Stellar(eur.clone()));
     let market = client.requote(&usd, &eur).unwrap();
-    assert!(!market.a.listed && !market.b.listed);
+    assert!(!market.base.listed && !market.quote.listed);
     assert_eq!(
         try_limit(
             &client,
@@ -707,13 +798,23 @@ fn test_update_on_a_fully_delisted_market_skips_the_floor() {
         Some(721)
     );
 
-    // nothing to value against: the floor is skipped, the dust rule still applies
-    update_one(&client, &trader, order_update(id, 50, PRECISION));
-    assert_eq!(client.order(&id).unwrap().amount, 50);
-    assert_eq!(
-        try_update_one(&client, &trader, order_update(id, 1, 1)),
-        Some(720)
-    );
+    // neither shrinking, growing nor repricing the order goes through
+    for update in [
+        order_update(id, 50, PRECISION),
+        order_update(id, 9000, PRECISION),
+        order_update(id, 1000, 2 * PRECISION),
+    ] {
+        assert_eq!(try_update_one(&client, &trader, update), Some(721));
+    }
+    let order = client.order(&id).unwrap();
+    assert_eq!((order.amount, order.price), (1000, PRECISION));
+
+    // an approval and a removal still go through
+    let approvals = Vec::from_array(&e, [approval(&e, &usd, 0)]);
+    let removed = client.update(&trader, &Vec::from_array(&e, [removal(id)]), &approvals);
+    assert_eq!(removed, Vec::from_array(&e, [id]));
+    assert!(client.order(&id).is_none());
+    assert_eq!(token::Client::new(&e, &usd).allowance(&trader, &axis), 0);
 }
 
 #[test]
@@ -781,8 +882,11 @@ fn test_requote_without_news_keeps_the_cache_and_emits_refresh() {
     advance(&e, 60);
     let refreshed = client.requote(&usd, &eur).unwrap();
     let events = e.events().all().filter_by_contract(&axis);
-    let (a, b) = canonical(&usd, &eur);
-    assert_eq!(events, [MarketRefreshEvent { a, b }.to_xdr(&e, &axis)]);
+    let (base, quote) = canonical(&usd, &eur);
+    assert_eq!(
+        events,
+        [MarketRefreshEvent { base, quote }.to_xdr(&e, &axis)]
+    );
     assert_eq!(refreshed, market);
     assert_eq!(cached_price(&e, &axis, &usd).unwrap(), cached);
 }

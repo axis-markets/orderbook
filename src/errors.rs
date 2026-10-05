@@ -15,7 +15,7 @@ pub enum OrderbookError {
     InvalidMatch = 704,
     /// Price is out of range
     InvalidPrice = 705,
-    /// The trade amount is invalid (negative)
+    /// Trade amount or a configuration value is out of range
     InvalidAmount = 706,
     /// The order expiration timestamp is not in the future
     InvalidExpiration = 707,
@@ -27,6 +27,8 @@ pub enum OrderbookError {
     OrderNotFound = 710,
     /// A live order with the same id already exists
     OrderExists = 711,
+    /// The contract cannot hold an asset it passes on (in `trade`, `crossfill` or `swap` hops)
+    IntermediaryCannotReceive = 712,
     /// Order value is below the minimum order size
     OrderSizeTooSmall = 720,
     /// The market does not exist, or none of its assets is listed on the price oracle
@@ -37,8 +39,6 @@ pub enum OrderbookError {
     InvalidOracleConfig = 723,
     /// Contract is frozen
     Frozen = 730,
-    /// Arithmetic invariant violated: a `mul_div` quotient that does not fit i128, a negative
-    /// operand or zero divisor, or a negative crossfill surplus. Plain arithmetic overflow is not
-    /// reported with this code: `overflow-checks` makes it trap
+    /// Arithmetic invariant violated
     Overflow = 740,
 }

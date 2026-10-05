@@ -2,7 +2,7 @@
 use super::setup::{
     actor, advance, advance_ledgers, balance, code, ensure_market, fund, mainnet_ttls, nonce,
     register_axis, remove_orders, setup_test, store_order, trade, try_remove_orders, try_trade,
-    MIN_PERSISTENT_TTL,
+    LPD, MIN_PERSISTENT_TTL,
 };
 use crate::events::{OrderCreatedEvent, OrderUpdatedEvent};
 use crate::order::{OrderKind, TradeDirection};
@@ -413,7 +413,6 @@ fn test_expired_order_frees_its_nonce() {
 
 #[test]
 fn test_order_over_an_expired_entry_gets_a_fresh_ttl() {
-    const LPD: u32 = 17_280;
     let (e, trader, _, usd, eur) = setup_test();
     mainnet_ttls(&e);
     let axis = register_axis(&e);

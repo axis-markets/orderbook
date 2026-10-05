@@ -1,6 +1,7 @@
 //! Matching engine rounding: the taker's acquired amount is rounded down, the amount paid
-//! for it rounded up, so a maker is never underpaid and the taker never pays more than one
-//! unit above the exact price.
+//! for it rounded up, so a maker is never underpaid and the taker never pays one unit or more
+//! above the exact price. The taker's limit is checked against the order price, so that
+//! allowance of less than one unit per fill can take a fill past the limit.
 use super::lib::setup::{
     actor, fake_asset, fund, list_asset, no_orders, open_market, register_axis, setup_oracle,
     store_order, trade, try_trade, UNIT_PRICE,
@@ -87,8 +88,66 @@ fn test_fill(
         expected_y_sent,
         expected_x_received
     );
-    //the maker never gets less than the order price for what they delivered
+    //the maker never gets less than the order price for what they delivered, and the taker pays
+    //less than one unit above it
     assert!(y_sent * PRECISION >= x_received * price);
+    assert!(y_sent * PRECISION < x_received * price + PRECISION);
+}
+
+/// Book with a maker selling 2 EUR at 0.6 USD per EUR and a taker holding USD
+fn small_order(
+    e: &Env,
+    usd: &Address,
+    eur: &Address,
+    maker: &Address,
+) -> (AxisClient<'static>, u128) {
+    let client = AxisClient::new(e, &register_axis(e));
+    fund(e, eur, &client.address, maker, 2);
+    let id = store_order(&client, maker, 2, eur, usd, 6 * PRECISION / 10);
+    (client, id)
+}
+
+#[test]
+fn test_sell_rounding_allowance_against_a_small_order() {
+    //2 EUR at 0.6 cost 1.2 USD, rounded up to 2: a taker asking for at least 1.6 EUR per USD
+    //accepts the order price (0.6 is below 1 / 1.6) and gets 1 EUR per USD, overpaying 0.8 USD
+    let (e, usd, eur, maker, taker) = env();
+    let (client, id) = small_order(&e, &usd, &eur, &maker);
+    fund(&e, &usd, &client.address, &taker, 2);
+
+    let (sold, bought, _) = trade(
+        &client,
+        TradeDirection::Sell,
+        OrderKind::Fill,
+        &taker,
+        2,
+        &usd,
+        &eur,
+        16 * PRECISION / 10,
+        &Vec::from_array(&e, [id]),
+    );
+    assert_eq!((sold, bought), (2, 2));
+}
+
+#[test]
+fn test_buy_rounding_allowance_against_a_small_order() {
+    //buying 1 EUR at no more than 0.6 USD each costs 0.6 USD, rounded up to 1
+    let (e, usd, eur, maker, taker) = env();
+    let (client, id) = small_order(&e, &usd, &eur, &maker);
+    fund(&e, &usd, &client.address, &taker, 1);
+
+    let (sold, bought, _) = trade(
+        &client,
+        TradeDirection::Buy,
+        OrderKind::Fill,
+        &taker,
+        1,
+        &usd,
+        &eur,
+        6 * PRECISION / 10,
+        &Vec::from_array(&e, [id]),
+    );
+    assert_eq!((sold, bought), (1, 1));
 }
 
 #[test]

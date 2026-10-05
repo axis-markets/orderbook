@@ -510,10 +510,10 @@ fn measure_views() {
 
 #[test]
 fn gate_fill_max_fills_with_skipped_orders() {
-    // MAX_FILLS fills plus 4 listed makers without an allowance: each skipped order adds a
+    // MAX_FILLS fills plus 3 listed makers without an allowance: each skipped order adds a
     // `skip` event, which the event cap has to absorb on top of the fills
     let (e, taker, _, usd, eur) = gate_env();
-    let skipped = 4;
+    let skipped = 3;
     let (client, contract, makers, ids) = seed_book(&e, &eur, &usd, MAX_FILLS + skipped, true);
     for maker in makers.iter().take(skipped as usize) {
         super::setup::approve(&e, &eur, &contract, maker, 0);

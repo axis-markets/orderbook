@@ -1,6 +1,7 @@
 //! Minimal token with per-account holding limits, standing in for a classic trustline limit (the
 //! test environment has no trustlines). Receiving more than the limit fails, like a full trustline.
-//! It exposes no `authorized`, so Axis treats every account as able to receive it.
+//! It exposes no `authorized`, so Axis treats every account as able to receive it. Its decimals
+//! (7 by default) can be changed to exercise high-precision tokens.
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
 
 #[contracterror]
@@ -19,6 +20,7 @@ enum Key {
     Balance(Address),
     Allowance(Address, Address),
     Limit(Address),
+    Decimals,
 }
 
 #[contract]
@@ -61,14 +63,19 @@ impl MockToken {
         e.storage().persistent().set(&Key::Limit(id), &limit);
     }
 
+    /// Change the reported decimals
+    pub fn set_decimals(e: Env, decimals: u32) {
+        e.storage().instance().set(&Key::Decimals, &decimals);
+    }
+
     pub fn mint(e: Env, to: Address, amount: i128) {
         receive(&e, &to, amount);
     }
 
     // ---- token interface ----------------------------------------------------------------
 
-    pub fn decimals(_e: Env) -> u32 {
-        7
+    pub fn decimals(e: Env) -> u32 {
+        e.storage().instance().get(&Key::Decimals).unwrap_or(7)
     }
 
     pub fn balance(e: Env, id: Address) -> i128 {

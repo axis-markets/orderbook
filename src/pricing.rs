@@ -2,7 +2,7 @@
 //! oracle (`fetch_prices`); `trade` and `update` value orders from the cache alone.
 use crate::errors::OrderbookError;
 use crate::market::{config, oracle_decimals, Market, MIN_TRADE_SIZE_UNIT};
-use crate::math::{mul_div_ceil, PRECISION};
+use crate::math::{mul_div_ceil, product_reaches, PRECISION};
 use crate::order::TradeDirection;
 use crate::reflector_beam::{Asset, ReflectorBeamClient};
 use crate::ttl::bump_price;
@@ -19,9 +19,8 @@ pub struct PriceCache {
     pub price: i128,
     /// Price record timestamp (in seconds)
     pub timestamp: u64,
-    /// Oracle the price was read from. A record left behind by a previous oracle is discarded
-    /// rather than reused: its decimals and base currency need not match the current one
-    pub oracle: Address,
+    /// Price decimals of the oracle the price was read from
+    pub decimals: u32,
 }
 
 /// Elapsed time since `timestamp`, zero for timestamps ahead of the ledger clock
@@ -32,17 +31,17 @@ fn age(now: u64, timestamp: u64) -> u64 {
 /// Pull fresh quotes for the market's oracle-listed assets into the cache. A failed or empty
 /// quote leaves the previous record in place, which keeps serving until it ages out
 pub(crate) fn fetch_prices(e: &Env, market: &Market) {
-    let oracle = config(e).oracle;
-    let client = ReflectorBeamClient::new(e, &oracle);
-    for side in [&market.a, &market.b] {
+    let client = ReflectorBeamClient::new(e, &config(e).oracle);
+    let decimals = oracle_decimals(e);
+    for side in [&market.base, &market.quote] {
         if side.listed {
-            fetch_price(e, &client, &oracle, &side.asset);
+            fetch_price(e, &client, decimals, &side.asset);
         }
     }
 }
 
 /// Cache the oracle's last price for `asset`, nothing is written when the oracle has no new data
-fn fetch_price(e: &Env, client: &ReflectorBeamClient, oracle: &Address, asset: &Address) {
+fn fetch_price(e: &Env, client: &ReflectorBeamClient, decimals: u32, asset: &Address) {
     let quote = client.try_lastprice(
         &e.current_contract_address(),
         &Asset::Stellar(asset.clone()),
@@ -55,7 +54,7 @@ fn fetch_price(e: &Env, client: &ReflectorBeamClient, oracle: &Address, asset: &
     let cached: Option<PriceCache> = e.storage().temporary().get(asset);
     let changed = match cached {
         Some(cache) => {
-            &cache.oracle != oracle
+            cache.decimals != decimals
                 || cache.price != data.price
                 || cache.timestamp != data.timestamp
         }
@@ -65,7 +64,7 @@ fn fetch_price(e: &Env, client: &ReflectorBeamClient, oracle: &Address, asset: &
         let record = PriceCache {
             price: data.price,
             timestamp: data.timestamp,
-            oracle: oracle.clone(),
+            decimals,
         };
         e.storage().temporary().set(asset, &record);
         bump_price(e, asset);
@@ -73,14 +72,13 @@ fn fetch_price(e: &Env, client: &ReflectorBeamClient, oracle: &Address, asset: &
 }
 
 /// Asset price in oracle base currency, read from the cache only: the oracle is never called
-/// here. `None` for a missing record, one cached under a previous oracle, or one older than
-/// `MAX_PRICE_AGE`
-pub(crate) fn cached_price(e: &Env, asset: &Address) -> Option<i128> {
+/// here. `None` for a missing record, one cached in other decimals than `decimals` (the current
+/// oracle's), or one older than `MAX_PRICE_AGE`
+fn cached_price(e: &Env, asset: &Address, decimals: u32) -> Option<i128> {
     let now = e.ledger().timestamp();
-    let oracle = config(e).oracle;
     let cached: Option<PriceCache> = e.storage().temporary().get(asset);
     match cached {
-        Some(cache) if cache.oracle == oracle && age(now, cache.timestamp) <= MAX_PRICE_AGE => {
+        Some(cache) if cache.decimals == decimals && age(now, cache.timestamp) <= MAX_PRICE_AGE => {
             Some(cache.price)
         }
         _ => None,
@@ -106,8 +104,9 @@ pub(crate) fn enforce_min_order_value(
     }
     //both cache entries are read regardless of the listing flags and the price age, so the
     //transaction footprint does not change when either moves between simulation and execution
-    let selling_price = cached_price(e, selling);
-    let buying_price = cached_price(e, buying);
+    let decimals = oracle_decimals(e);
+    let selling_price = cached_price(e, selling, decimals);
+    let buying_price = cached_price(e, buying, decimals);
     let counter = mul_div_ceil(e, amount, price, PRECISION);
     let (selling_amount, buying_amount) = match direction {
         TradeDirection::Sell => (amount, counter),
@@ -118,21 +117,14 @@ pub(crate) fn enforce_min_order_value(
     let (tokens, side, price) = match (selling_price, buying_price) {
         (Some(price), _) if sell_side.listed => (selling_amount, sell_side, price),
         (_, Some(price)) if buy_side.listed => (buying_amount, buy_side, price),
-        _ if !sell_side.listed && !buy_side.listed => return,
+        //callers load the market with a listed side, which has no usable price here
         _ => e.panic_with_error(OrderbookError::AssetPriceOracleFetchFailed),
     };
     //tokens / 10^token_decimals * price / 10^oracle_decimals >= min_trade_size / 10^size_decimals,
-    //cross-multiplied. The threshold rounds up, so the configured floor is never undershot
-    //`MAX_TOTAL_DECIMALS`, checked when the side is resolved, keeps the power within i128;
-    //after a switch to an oracle with more decimals it holds again once `requote` re-checks
-    let scale = 10i128.pow(oracle_decimals(e) + side.decimals);
-    let threshold = mul_div_ceil(e, min_trade_size, scale, MIN_TRADE_SIZE_UNIT);
-    let valid = match tokens.checked_mul(price) {
-        Some(value) => value >= threshold,
-        //the product does not fit i128, so it exceeds any threshold that does
-        None => true,
-    };
-    if !valid {
+    //cross-multiplied. The threshold rounds up, so the configured floor is never undershot and
+    //the comparison stays exact however large either side gets
+    let scale = 10i128.pow(decimals + side.decimals);
+    if !product_reaches(e, tokens, price, min_trade_size, scale, MIN_TRADE_SIZE_UNIT) {
         e.panic_with_error(OrderbookError::OrderSizeTooSmall);
     }
 }

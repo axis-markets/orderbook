@@ -139,35 +139,15 @@ pub(crate) fn check_expires(e: &Env, expires: u64) {
     }
 }
 
-/// Create and store a new order
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn store_order(
-    e: &Env,
-    id: u128,
-    owner: Address,
-    amount: i128,
-    selling: Address,
-    buying: Address,
-    price: i128,
-    expires: u64,
-) -> u128 {
-    let replaced = require_free(e, id);
-    let order = Order {
-        id,
-        owner,
-        amount,
-        selling,
-        buying,
-        price,
-        expires,
-    };
-    write_order(e, &order);
+/// Store a new order under an id `require_free` cleared; `replaced` is what it returned, whether
+/// the order overwrites an expired entry
+pub(crate) fn store_order(e: &Env, order: &Order, replaced: bool) {
+    write_order(e, order);
     //a fresh entry starts at the network minimum lifetime, an overwritten one keeps the old TTL
     if replaced {
-        bump_order(e, id, expires);
+        bump_order(e, order.id, order.expires);
     }
-    events::emit_new(e, &order);
-    id
+    events::emit_new(e, order);
 }
 
 /// Store the amount left after a fill, dropping the order once nothing is left.

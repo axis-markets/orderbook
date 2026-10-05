@@ -2,7 +2,7 @@
 use super::setup::{
     actor, advance, advance_ledgers, approval, approve, balance, code, fund, mainnet_ttls,
     no_approvals, order_update, register_axis, removal, remove_orders, set_price, setup_test,
-    store_order, trade, try_update_one, update_one, MIN_PERSISTENT_TTL, ORACLE_DECIMALS,
+    store_order, trade, try_update_one, update_one, LPD, MIN_PERSISTENT_TTL, ORACLE_DECIMALS,
 };
 use crate::events::OrderUpdatedEvent;
 use crate::order::{OrderKind, TradeDirection};
@@ -440,8 +440,6 @@ fn test_update_ignores_repeated_ids() {
     let order = client.order(&id).unwrap();
     assert_eq!((order.amount, order.price), (700, PRECISION));
 }
-
-const LPD: u32 = 17_280;
 
 #[test]
 fn test_update_extends_the_order_ttl() {

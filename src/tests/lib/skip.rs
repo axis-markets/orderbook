@@ -1,10 +1,13 @@
 //! Faulty counterparties: a maker who cannot receive the taker's asset, or whose transfer fails
 //! despite enough backing, is skipped with a `skip` event; a taker who cannot receive the asset
-//! (a deauthorized or full trustline) fails the trade without flagging any maker.
+//! (a deauthorized or full trustline) fails the trade without flagging any maker. A payment that
+//! fails, whether the taker cannot pay or the maker's line for the payment is full, fails the
+//! trade with the token's own error: no probe transfer spends the payer's allowance.
 use super::mock_token::{MockToken, MockTokenClient};
 use super::setup::{
-    actor, balance, code, fake_asset_revocable, fund, list_asset, nonce, open_market,
-    register_axis, setup_test, store_order, trade, try_trade, UNIT_PRICE,
+    actor, approve, assert_no_custody, authorize, balance, code, fake_asset_auth_required,
+    fake_asset_revocable, fund, list_asset, nonce, open_market, register_axis, setup_test,
+    store_order, trade, try_trade, UNIT_PRICE,
 };
 use crate::events::OrderSkippedEvent;
 use crate::order::{order_id, OrderKind, TradeDirection};
@@ -288,4 +291,216 @@ fn test_limit_trade_with_full_trustline_creates_no_order() {
     let taker_order = e.as_contract(&axis, || order_id(&e, &taker, taker_nonce));
     assert!(client.order(&taker_order).is_none());
     assert_eq!(client.order(&id).unwrap().amount, 1000);
+}
+
+#[test]
+fn test_maker_with_full_line_for_the_payment_fails_the_trade() {
+    // The maker's line for the asset the taker pays with has room for 500 only. Nothing reveals a
+    // line limit before the transfer, so the maker is admitted and their asset moves to the
+    // contract; the payment to them then fails with the token's own error, which fails the trade:
+    // nothing moves and the taker's allowance is not spent on a probe
+    let (e, maker, _, usd, _) = setup_test();
+    let (capped, capped_client) = capped_asset(&e);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let taker = actor(&e);
+    fund(&e, &usd, &axis, &maker, 10000);
+    fund(&e, &capped, &axis, &taker, 10000);
+    approve(&e, &capped, &axis, &taker, 1000);
+    let id = store_order(&client, &maker, 1000, &usd, &capped, PRECISION);
+    capped_client.set_limit(&maker, &500);
+
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::Fill,
+            &taker,
+            1000,
+            &capped,
+            &usd,
+            PRECISION,
+            &Vec::from_array(&e, [id]),
+        ),
+        Some(11)
+    );
+    assert_eq!(client.order(&id).unwrap().amount, 1000);
+    assert_eq!(balance(&e, &usd, &maker), 10000);
+    assert_eq!(balance(&e, &capped, &taker), 10000);
+    assert_eq!(
+        soroban_sdk::token::Client::new(&e, &capped).allowance(&taker, &axis),
+        1000
+    );
+    assert_no_custody(&e, &axis, &[&usd, &capped]);
+}
+
+#[test]
+fn test_maker_with_full_line_fails_the_trade_until_left_out() {
+    // the trade settles once the maker who cannot be paid is left out of the list
+    let (e, bad, _, usd, _) = setup_test();
+    let (capped, capped_client) = capped_asset(&e);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let good = actor(&e);
+    let taker = actor(&e);
+    fund(&e, &usd, &axis, &bad, 1000);
+    fund(&e, &usd, &axis, &good, 1000);
+    fund(&e, &capped, &axis, &taker, 10000);
+    let bad_order = store_order(&client, &bad, 1000, &usd, &capped, PRECISION);
+    let good_order = store_order(&client, &good, 1000, &usd, &capped, PRECISION);
+    capped_client.set_limit(&bad, &0);
+
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::Fill,
+            &taker,
+            2000,
+            &capped,
+            &usd,
+            PRECISION,
+            &Vec::from_array(&e, [bad_order, good_order]),
+        ),
+        Some(11)
+    );
+    assert_eq!(client.order(&bad_order).unwrap().amount, 1000);
+    assert_eq!(client.order(&good_order).unwrap().amount, 1000);
+    assert_eq!(balance(&e, &capped, &taker), 10000);
+
+    let (sold, bought, _) = trade(
+        &client,
+        TradeDirection::Sell,
+        OrderKind::Fill,
+        &taker,
+        2000,
+        &capped,
+        &usd,
+        PRECISION,
+        &Vec::from_array(&e, [good_order]),
+    );
+    assert_eq!((sold, bought), (1000, 1000));
+    assert_eq!(client.order(&bad_order).unwrap().amount, 1000);
+    assert!(client.order(&good_order).is_none());
+    assert_eq!(balance(&e, &usd, &bad), 1000);
+    assert_eq!(balance(&e, &usd, &taker), 1000);
+    assert_eq!(balance(&e, &capped, &good), 1000);
+    assert_eq!(balance(&e, &capped, &taker), 9000);
+    assert_no_custody(&e, &axis, &[&usd, &capped]);
+}
+
+#[test]
+fn test_limit_trade_against_a_maker_with_full_line_creates_no_order() {
+    // the failed payment fails the whole trade, so no remainder order is created either
+    let (e, maker, _, usd, _) = setup_test();
+    let (capped, capped_client) = capped_asset(&e);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let taker = actor(&e);
+    fund(&e, &usd, &axis, &maker, 1000);
+    fund(&e, &capped, &axis, &taker, 10000);
+    let id = store_order(&client, &maker, 1000, &usd, &capped, PRECISION);
+    capped_client.set_limit(&maker, &0);
+
+    let taker_nonce = nonce();
+    let res = client.try_trade(
+        &TradeDirection::Sell,
+        &OrderKind::Limit,
+        &taker,
+        &1000,
+        &capped,
+        &usd,
+        &PRECISION,
+        &Vec::from_array(&e, [id]),
+        &taker_nonce,
+        &0,
+        &None,
+    );
+    assert_eq!(code(res), Some(11));
+    let taker_order = e.as_contract(&axis, || order_id(&e, &taker, taker_nonce));
+    assert!(client.order(&taker_order).is_none());
+    assert_eq!(client.order(&id).unwrap().amount, 1000);
+    assert_no_custody(&e, &axis, &[&usd, &capped]);
+}
+
+#[test]
+fn test_taker_who_cannot_pay_fails_the_trade_without_flagging_the_maker() {
+    // the taker's allowance covers only half of the fill: the payment fails on the taker's side,
+    // so the trade fails with the token's own error rather than skipping the maker
+    let (e, maker, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let taker = actor(&e);
+    fund(&e, &eur, &axis, &maker, 1000);
+    fund(&e, &usd, &axis, &taker, 10000);
+    let id = store_order(&client, &maker, 1000, &eur, &usd, PRECISION);
+    approve(&e, &usd, &axis, &taker, 500);
+
+    let res = try_trade(
+        &client,
+        TradeDirection::Sell,
+        OrderKind::Fill,
+        &taker,
+        1000,
+        &usd,
+        &eur,
+        PRECISION,
+        &Vec::from_array(&e, [id]),
+    );
+    assert!(res.is_some_and(|code| code != 708), "{:?}", res);
+    assert_eq!(client.order(&id).unwrap().amount, 1000);
+    assert_eq!(balance(&e, &eur, &maker), 1000);
+    assert_eq!(balance(&e, &usd, &taker), 10000);
+}
+
+#[test]
+fn test_trade_into_an_auth_required_asset_needs_the_contract_authorized() {
+    // the makers deliver to the contract, which forwards to the taker: an asset whose issuer must
+    // authorize every holder cannot pass through until the issuer authorizes the contract
+    let (e, maker, issuer, usd, _) = setup_test();
+    let regulated = fake_asset_auth_required(&e, &issuer);
+    list_asset(&e, &regulated, UNIT_PRICE);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let taker = actor(&e);
+    for holder in [&maker, &taker] {
+        authorize(&e, &regulated, holder);
+    }
+    fund(&e, &regulated, &axis, &maker, 1000);
+    fund(&e, &usd, &axis, &taker, 1000);
+    let id = store_order(&client, &maker, 1000, &regulated, &usd, PRECISION);
+    let orders = Vec::from_array(&e, [id]);
+
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::Fill,
+            &taker,
+            1000,
+            &usd,
+            &regulated,
+            PRECISION,
+            &orders,
+        ),
+        Some(712)
+    );
+    assert_eq!(client.order(&id).unwrap().amount, 1000);
+
+    authorize(&e, &regulated, &axis);
+    let (sold, bought, _) = trade(
+        &client,
+        TradeDirection::Sell,
+        OrderKind::Fill,
+        &taker,
+        1000,
+        &usd,
+        &regulated,
+        PRECISION,
+        &orders,
+    );
+    assert_eq!((sold, bought), (1000, 1000));
+    assert_eq!(balance(&e, &regulated, &taker), 1000);
+    assert_eq!(balance(&e, &usd, &maker), 1000);
+    assert_no_custody(&e, &axis, &[&usd, &regulated]);
 }

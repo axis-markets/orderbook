@@ -142,6 +142,11 @@ pub(crate) fn cross_orders(
     let owner = taker_order.owner.clone();
     let selling = taker_order.selling.clone();
     let buying = taker_order.buying.clone();
+    //the makers deliver to the contract, which pays the owner and the trader out of it: an asset
+    //requiring issuer authorization cannot pass through until the issuer authorizes the contract
+    if !order::can_receive(e, &buying, &axis) {
+        e.panic_with_error(OrderbookError::IntermediaryCannotReceive);
+    }
     //the owner backs the taker order with balance and allowance like any maker, and is paid
     //with a plain transfer
     let budget = taker_order.amount.min(order::backing(e, &selling, &owner));
@@ -173,7 +178,7 @@ pub(crate) fn cross_orders(
         Some(taker_order.price),
         &mut dispatcher,
     );
-    let (paid, received) = dispatcher.settle();
+    let (paid, received, _) = dispatcher.settle();
     if paid == 0 {
         return (0, 0, 0);
     }

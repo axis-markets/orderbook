@@ -64,6 +64,21 @@ pub(crate) fn mul_div_ceil(e: &Env, a: i128, b: i128, d: i128) -> i128 {
     }
 }
 
+/// Whether `a * b >= ceil(c * d / u)` for non-negative operands. Exact for any i128 operands:
+/// when a product or the quotient does not fit i128 the comparison runs in 256 bits, where
+/// neither side can overflow
+pub(crate) fn product_reaches(e: &Env, a: i128, b: i128, c: i128, d: i128, u: i128) -> bool {
+    check_mul_div_operands(e, a, b, u);
+    check_mul_div_operands(e, c, d, u);
+    if let (Some(product), Some(threshold)) = (a.checked_mul(b), try_mul_div_ceil(e, c, d, u)) {
+        return product >= threshold;
+    }
+    let wide = |x: i128| U256::from_u128(e, x as u128);
+    let product = wide(a).mul(&wide(b));
+    let threshold = wide(c).mul(&wide(d)).add(&wide(u - 1)).div(&wide(u));
+    product >= threshold
+}
+
 /// Price seen from the other side of the market, rounded down
 #[inline]
 pub(crate) fn invert_price_floor(e: &Env, price: i128) -> i128 {

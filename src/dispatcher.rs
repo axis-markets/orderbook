@@ -39,7 +39,7 @@ pub(crate) struct Dispatcher {
     /// Whether to `transfer` out of the contract's own balance (intermediate swap hops)
     intermediate: bool,
     /// Strict: every admitted fill settles exactly as planned or the call fails, otherwise a
-    /// maker whose transfer fails is skipped
+    /// maker whose asset cannot be collected is skipped
     strict: bool,
     /// Pending fills grouped by the maker address
     makers: Map<Address, Vec<Fill>>,
@@ -136,11 +136,15 @@ impl Dispatcher {
         worst
     }
 
-    /// Settle every fill maker by maker. Maker's assets go to the receiver, the taker's
-    /// asset to the maker. Skipped orders are reported with `skip` events. A receiver that refuses
-    /// the acquired asset fails the call (`CannotReceive`) rather than skipping the makers.
-    /// Returns the amounts the taker actually sold and bought
-    pub fn settle(self) -> (i128, i128) {
+    /// Settle every fill maker by maker. Maker's assets go to the contract, the taker's asset to
+    /// the maker, and the contract forwards the makers' assets to the receiver in one transfer at
+    /// the end. Skipped orders are reported with `skip` events. A maker whose asset cannot be
+    /// collected is skipped, a payment that fails ends the call with the token's error whoever
+    /// is at fault, and a receiver that refuses the acquired asset fails the call(`CannotReceive`)
+    /// rather than skipping the makers.
+    /// Returns the amounts the taker actually sold and bought, and the highest order price among
+    /// the settled fills (0 when nothing settled)
+    pub fn settle(self) -> (i128, i128, i128) {
         let e = &self.e;
         let axis = e.current_contract_address();
         let get_token = token::Client::new(e, &self.get_asset);
@@ -148,10 +152,15 @@ impl Dispatcher {
         //a receiver-side problem is reported before any transfer
         if !self.strict && !self.makers.is_empty() {
             order::require_can_receive(e, &self.get_asset, &self.receiver);
+            //the makers' assets pass through the contract on their way to the receiver
+            if !order::can_receive(e, &self.get_asset, &axis) {
+                e.panic_with_error(OrderbookError::IntermediaryCannotReceive);
+            }
         }
-        let mut skipped = self.skipped;
+        let mut skipped = self.skipped.clone();
         let mut total_sold = 0;
         let mut total_bought = 0;
+        let mut worst_price = 0;
         for (maker, fills) in self.makers.iter() {
             let mut maker_sends = 0;
             let mut maker_gets = 0;
@@ -159,32 +168,20 @@ impl Dispatcher {
                 maker_sends += fill.bought;
                 maker_gets += fill.sold;
             }
-            //maker part
             if self.strict {
-                get_token.transfer_from(&axis, &maker, &self.receiver, &maker_sends);
-            } else if get_token
-                .try_transfer_from(&axis, &maker, &self.receiver, &maker_sends)
-                .is_err()
-            {
-                //a maker who can move the amount to themselves is ok - the receiver refused it
-                if self.receiver != axis
-                    && get_token
-                        .try_transfer_from(&axis, &maker, &maker, &maker_sends)
-                        .is_ok()
-                {
-                    e.panic_with_error(OrderbookError::CannotReceive);
+                //maker part
+                get_token.transfer_from(&axis, &maker, &axis, &maker_sends);
+                //taker part
+                match self.intermediate {
+                    false => pay_token.transfer_from(&axis, &self.taker, &maker, &maker_gets),
+                    true => pay_token.transfer(&axis, &maker, &maker_gets),
                 }
-                // the backing read passed, so the balance is locked elsewhere (classic liabilities,
-                // reserve) or the trustline is deauthorized: skip the maker, their orders stay untouched
+            } else if !self.settle_final(&get_token, &pay_token, &maker, maker_sends, maker_gets) {
+                //the maker could not settle, its orders stay untouched
                 for fill in fills.iter() {
                     skipped.push_back(fill.order.id);
                 }
                 continue;
-            }
-            //taker part
-            match self.intermediate {
-                false => pay_token.transfer_from(&axis, &self.taker, &maker, &maker_gets),
-                true => pay_token.transfer(&axis, &maker, &maker_gets),
             }
             //record the fills
             for fill in fills.iter() {
@@ -207,11 +204,50 @@ impl Dispatcher {
                 );
                 total_sold += fill.sold;
                 total_bought += fill.bought;
+                worst_price = worst_price.max(fill.order.price);
+            }
+        }
+        //forward what the makers delivered in one transfer
+        if self.receiver != axis && total_bought > 0 {
+            if self.strict {
+                get_token.transfer(&axis, &self.receiver, &total_bought);
+            } else if get_token
+                .try_transfer(&axis, &self.receiver, &total_bought)
+                .is_err()
+            {
+                //a receiver that refuses it is not the makers' fault
+                e.panic_with_error(OrderbookError::CannotReceive);
             }
         }
         for id in skipped.iter() {
             events::emit_skip(e, id);
         }
-        (total_sold, total_bought)
+        (total_sold, total_bought, worst_price)
+    }
+
+    /// Settle a maker in lenient mode: the maker's asset goes to the contract, the taker's
+    /// asset to the maker. Returns `false` when the maker's asset cannot be collected, with
+    /// nothing moved. A payment that fails, whether the taker cannot pay or the maker cannot
+    /// be credited, fails the call with the token's error
+    fn settle_final(
+        &self,
+        receiving: &token::Client,
+        sending: &token::Client,
+        maker: &Address,
+        maker_sends: i128,
+        maker_gets: i128,
+    ) -> bool {
+        let e = &self.e;
+        let axis = e.current_contract_address();
+        //maker part
+        if receiving
+            .try_transfer_from(&axis, maker, &axis, &maker_sends)
+            .is_err()
+        {
+            return false;
+        }
+        //taker part
+        sending.transfer_from(&axis, &self.taker, maker, &maker_gets);
+        true
     }
 }

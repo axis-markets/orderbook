@@ -100,12 +100,12 @@ pub struct OrderSkippedEvent {
 #[contractevent(topics = ["refresh"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketRefreshEvent {
-    /// First market asset
+    /// Base market asset, the first of the pair in canonical order
     #[topic]
-    pub a: Address,
-    /// Second market asset
+    pub base: Address,
+    /// Quote market asset, the second of the pair in canonical order
     #[topic]
-    pub b: Address,
+    pub quote: Address,
 }
 
 pub(crate) fn emit_config(e: &Env, config: &Config) {
@@ -121,10 +121,10 @@ pub(crate) fn emit_skip(e: &Env, order: u128) {
 }
 
 #[inline]
-pub(crate) fn emit_refresh(e: &Env, a: &Address, b: &Address) {
+pub(crate) fn emit_refresh(e: &Env, base: &Address, quote: &Address) {
     MarketRefreshEvent {
-        a: a.clone(),
-        b: b.clone(),
+        base: base.clone(),
+        quote: quote.clone(),
     }
     .publish(e);
 }
