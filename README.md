@@ -5,8 +5,10 @@
 The contract holds no user funds between calls. Makers and takers grant the contract a standing token allowance, and
 every fill is settled with `transfer_from`, the contract acting as the spender: the taker pays each maker directly,
 while the makers' assets pass through the contract on their way to the taker within the call. An order is backed by its
-owner's balance and allowance. A fill the maker cannot back, or whose payment the maker cannot receive, is skipped: the
-order is left unchanged and a `skip` event tells indexers which maker failed to settle.
+owner's balance and allowance. A fill the maker cannot back, or whose payment the maker cannot receive (a missing or
+deauthorized trustline), is skipped: the order is left unchanged and a `skip` event tells indexers which maker failed to
+settle. A payment that fails although the maker is authorized (e.g. a full trustline) fails the whole call with the
+token's own error instead.
 
 ## Interface
 
@@ -321,7 +323,6 @@ Panics
 - If the call is not authorized by the safety admin
 - If `ledger_time` is zero or exceeds 20 seconds (`InvalidAmount`)
 
-
 ## Allowances
 
 Every asset a trader sells through the contract needs a standing allowance:
@@ -339,9 +340,9 @@ time. A listed order fills only when the maker's backing left covers that fill (
 in list order) and the maker can receive the taker's asset; otherwise it is skipped, left unchanged, and a `skip`
 event names it. The same happens when the maker's transfer fails despite the backing (classic liabilities, reserve, a
 deauthorized trustline). The payment to the maker is never probed: when it fails, whether the taker cannot pay or the
-maker cannot be credited although authorized (e.g. a classic trustline with limit, which `authorized` does not
-show), the call fails with the token's own error, nothing moves and no maker is flagged, the caller leaves that maker
-out and retries. Telling the two apart would take a probe transfer that spends the payer's allowance, and in
+maker cannot be credited although authorized (e.g. a classic trustline with limit, which `authorized` does not show),
+the call fails with the token's own error, nothing moves and no maker is flagged, the caller leaves that maker out and
+retries. Telling the two apart would take a probe transfer that spends the payer's allowance, and in
 `crossfill` the payer is the order owner, who did not sign the call. A taker who cannot receive the bought asset fails
 the trade with `CannotReceive`. Matching never removes, trims or caps an order. Routers should compute the effective
 depth per maker and asset as `min(balance, allowance)` shared across that maker's orders, treat the allowance's
@@ -351,10 +352,10 @@ depth per maker and asset as `min(balance, allowance)` shared across that maker'
 ## Rounding
 
 Every fill rounds in the maker's favor: the taker receives a rounded-down amount and pays a rounded-up one, so a maker
-is never paid below the order price. The taker's `price` limit is compared with the order prices, not with the rate
-each fill ends up at, so rounding can take a fill past the limit by less than one base unit of the asset the taker
-pays. For example, a maker sells 2 EUR at 0.6 USD/EUR: the whole order costs 1.2 USD, rounded up to 2. A taker selling
-USD for at least 1.6 EUR per USD accepts the order (0.6 is below 1 / 1.6) and gets 2 EUR for 2 USD, 1 EUR per USD.
+is never paid below the order price. The taker's `price` limit is compared with the order prices, not with the rate each
+fill ends up at, so rounding can take a fill past the limit by less than one base unit of the asset the taker pays. For
+example, a maker sells 2 EUR at 0.6 USD/EUR: the whole order costs 1.2 USD, rounded up to 2. A taker selling USD for at
+least 1.6 EUR per USD accepts the order (0.6 is below 1 / 1.6) and gets 2 EUR for 2 USD, 1 EUR per USD.
 
 The allowance is under one base unit of the paid asset per fill, so under 20 units per trade at the fill cap. That is
 negligible for 7-decimal Stellar assets, but a unit of a token with few decimals can carry real value. Fills are
@@ -399,9 +400,9 @@ and `mod` events carry it.
 `update` sets the amount, price and expiration of an order to the values given. The amount is absolute, not a change
 from the current amount, so a fill that lands between signing and execution is not taken into account: a maker who
 shrinks an order from 1000 to 800 while a 500 fill is in flight ends up with 800 on the book after the fill, selling
-1300 in total instead of 800 (at their price, and backed by their balance and allowance). To cut exposure whatever
-fills are in flight, remove the order (`amount = 0`) or lower the allowance in the same call (`approvals`), which caps
-what all the maker's orders on that asset can still sell; read the order again before resizing it.
+1300 in total instead of 800 (at their price, and backed by their balance and allowance). To cut exposure whatever fills
+are in flight, remove the order (`amount = 0`) or lower the allowance in the same call (`approvals`), which caps what
+all the maker's orders on that asset can still sell; read the order again before resizing it.
 
 ## Order storage format
 
@@ -492,8 +493,8 @@ struct Market {
 The record changes only when a side's listing or decimals change. Every check against the oracle (`requote`,
 `subsidize`, market creation) emits a `refresh` event, which marks the time of the last verification. An asset whose
 token decimals and oracle decimals add up to more than 37 cannot be valued, so it is recorded as unlisted (with zero
-decimals) even when the oracle quotes it; after `set_oracle` to an oracle with more decimals, the next check of a
-market delists such an asset instead of failing.
+decimals) even when the oracle quotes it; after `set_oracle` to an oracle with more decimals, the next check of a market
+delists such an asset instead of failing.
 
 Reading a market (`requote`, `subsidize`, the `market` view) extends its entry to 120 days once less than 30 are left.
 Writing an order to it (a `Limit` trade, an `update` that changes an order) extends it to 121 days once less than 120
@@ -568,9 +569,9 @@ days, a pair with one listed asset gets 90 days of that asset's feed, a pair wit
 `listing_min_days` therefore counts asset-days, and the fee is `daily_fee × listing_min_days` whatever the number of
 listed assets. A later change of the oracle's own daily fee is picked up by the next `set_oracle` or
 `set_listing_min_days`. With `listing_min_days` at zero the listing fee is zero and `subsidize` opens a market for any
-positive amount, burning only what it is given; a zero or negative amount is `InvalidAmount` in every case.
-Price feed access is bought per asset, so a market whose assets other markets already provision can value its orders
-right away; one whose assets nobody provisions needs a subsidy before its orders can be valued.
+positive amount, burning only what it is given; a zero or negative amount is `InvalidAmount` in every case. Price feed
+access is bought per asset, so a market whose assets other markets already provision can value its orders right away;
+one whose assets nobody provisions needs a subsidy before its orders can be valued.
 
 Prices are cached per asset together with the decimals of the oracle that quoted them. After `set_oracle` the cached
 prices keep valuing orders, until they reach the 72-hour age limit, when the new oracle quotes with the same decimals,
@@ -595,9 +596,9 @@ contract, which cannot perform any balance actions while frozen.
 ## Contract lifetime
 
 The contract has no lifetime entry point. Keepers extend the contract instance and its WASM code with the standard
-`ExtendFootprintTTL` operation (both entries in the read-only footprint), for a horizon of their choice up to the network
-maximum. Every state-changing entry point also extends both entries when less than 3 days are left, and then to 3 days,
-so traders pay contract rent only when keepers have not done their job.
+`ExtendFootprintTTL` operation (both entries in the read-only footprint), for a horizon of their choice up to the
+network maximum. Every state-changing entry point also extends both entries when less than 3 days are left, and then to
+3 days, so traders pay contract rent only when keepers have not done their job.
 
 Every lifetime the contract sets (contract, markets, orders, cached prices) is given in days or hours and converted into
 ledgers with `Config::ledger_time`, 5 seconds per ledger at deployment. When the network changes its ledger close time,
@@ -643,11 +644,12 @@ Data: `[id: u128, price: i128, amount: i128, expires: u64]`
 ### `skip`
 
 Emitted when a listed order is not executed because its maker could not settle the fill: the backing left does not cover
-it, the maker cannot receive the taker's asset (a missing, deauthorized or full trustline), or the maker's transfer
-failed on the maker's side. A transfer the taker cannot receive fails the trade (`CannotReceive`) instead, so `skip`
-never flags a maker for the taker's trustline. The order is left unchanged. For `crossfill` it also flags a taker order
-its owner cannot back or be paid for. Missing, expired, overpriced and duplicate ids, and ids of another pair, emit
-nothing.
+it, the maker cannot receive the taker's asset (a missing or deauthorized trustline), or the maker's asset could not be
+collected (the maker's transfer to the contract failed). A payment the maker cannot be credited with although authorized
+(a full trustline) fails the call with the token's own error, and a transfer the taker cannot receive fails the trade
+with `CannotReceive`, so `skip` never flags a maker for either. The order is left unchanged. For `crossfill` it also
+flags a taker order its owner cannot back or be paid for. Missing, expired, overpriced and duplicate ids, and ids of
+another pair, emit nothing.
 
 Topics: `["skip"]`  
 Data: `u128` - the order id
@@ -684,9 +686,9 @@ adds an 84-byte `skip` event: 20 fills leave room for 3 skipped orders, so route
 An `update` batch can hold about 110 orders (modified or removed). Write entries limit results in the max orders cap of
 about 49 orders per trade.
 
-Every `trade` and `swap` writes the contract's own balance of the asset it buys (and of every hop asset of a `swap`),
-so trades buying the same asset share that ledger entry and cannot run in parallel. A `swap` forwards what its last
-hop bought to the trader in one transfer as well, one `transfer` event per swap on top of the fills.
+Every `trade` and `swap` writes the contract's own balance of the asset it buys (and of every hop asset of a `swap`), so
+trades buying the same asset share that ledger entry and cannot run in parallel. A `swap` forwards what its last hop
+bought to the trader in one transfer as well, one `transfer` event per swap on top of the fills.
 
 Assets whose issuer requires authorization (`AUTH_REQUIRED`) pass through the contract whenever they are bought:
 `trade`, `crossfill` and every `swap` hop deliver the makers' assets to the contract before they reach the trader. The
@@ -695,8 +697,7 @@ contract); until then such a purchase fails with `IntermediaryCannotReceive`. Se
 authorization, since the taker pays each maker directly.
 
 The oracle may quote with at most 24 decimals, and an asset can be valued only when its token decimals and the oracle
-decimals add up to 37 at most (23 token decimals under Reflector's 14); markets record an asset beyond that as
-unlisted.
+decimals add up to 37 at most (23 token decimals under Reflector's 14); markets record an asset beyond that as unlisted.
 
 ## Deployment and TS Bindings
 
