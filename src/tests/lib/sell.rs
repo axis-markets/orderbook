@@ -2,6 +2,7 @@ use super::setup::{
     actor, assert_no_custody, balance, fake_asset, fund, list_asset, no_orders, open_market,
     register_axis, setup_oracle, setup_test, store_order, trade, try_trade, UNIT_PRICE,
 };
+use crate::math::MIN_PRICE;
 use crate::order::{order_id as derive_order_id, OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, AxisClient};
 use soroban_sdk::testutils::Address as _;
@@ -348,21 +349,21 @@ fn test_duplicate_order_id_fills_once() {
 
 #[test]
 fn test_sell_against_a_very_cheap_order() {
-    // A maker sells EUR at the lowest allowed price (1, meaning 10^-18 USD per EUR); 10^18 EUR
-    // is the smallest order worth a unit at that price. A taker sells 2*10^20 raw USD (200
-    // whole units of an 18-decimal token). That much USD could buy 2*10^38 EUR, more than
-    // i128 holds, which the contract used to compute before capping it at the order size and
-    // then failed with `Overflow`. The whole order is priced first now: it costs 1 USD.
+    // A maker sells EUR at the lowest allowed price (`MIN_PRICE`, meaning 10^-16 USD per EUR);
+    // 10^16 EUR is the smallest order worth a unit at that price. A taker sells 2*10^22 raw USD
+    // (20,000 whole units of an 18-decimal token). That much USD could buy 2*10^38 EUR, more
+    // than i128 holds, which the contract used to compute before capping it at the order size
+    // and then failed with `Overflow`. The whole order is priced first now: it costs 1 USD.
     let (e, _, _, usd, eur) = setup_test();
     let axis = register_axis(&e);
     let client = AxisClient::new(&e, &axis);
     let maker = actor(&e);
     let taker = actor(&e);
-    let order_amount = PRECISION;
-    let taker_amount = 2 * 10i128.pow(20);
+    let order_amount = PRECISION / MIN_PRICE;
+    let taker_amount = 2 * 10i128.pow(22);
     fund(&e, &eur, &axis, &maker, order_amount);
     fund(&e, &usd, &axis, &taker, taker_amount);
-    let id = store_order(&client, &maker, order_amount, &eur, &usd, 1);
+    let id = store_order(&client, &maker, order_amount, &eur, &usd, MIN_PRICE);
 
     let (sold, bought, _) = trade(
         &client,

@@ -401,6 +401,84 @@ fn test_price_older_than_max_age_is_rejected() {
 }
 
 #[test]
+fn test_quote_dated_ahead_of_the_ledger_is_not_cached() {
+    // a quote from the future would never age: it is ignored, so nothing values the order
+    let (e, trader, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    fund(&e, &usd, &axis, &trader, 10000);
+    let ahead = START_TIMESTAMP + 1;
+    for asset in [&usd, &eur] {
+        oracle_client(&e).set_price(&Asset::Stellar(asset.clone()), &UNIT_PRICE, &ahead);
+    }
+    open_market(&client, &usd, &eur);
+    assert_eq!(cached_price(&e, &axis, &usd), None);
+    assert_eq!(cached_price(&e, &axis, &eur), None);
+    let sell = || {
+        try_limit(
+            &client,
+            TradeDirection::Sell,
+            &trader,
+            1000,
+            &usd,
+            &eur,
+            PRECISION,
+        )
+    };
+    assert_eq!(sell(), Some(722));
+
+    // once the ledger reaches its time the quote is cached like any other
+    advance(&e, 1);
+    client.requote(&usd, &eur);
+    assert_eq!(cached_price(&e, &axis, &usd).unwrap().timestamp, ahead);
+    assert_eq!(sell(), None);
+}
+
+#[test]
+fn test_quote_dated_ahead_of_the_ledger_keeps_the_cached_price() {
+    let (e, _, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    open_market(&client, &usd, &eur);
+    let cached = cached_price(&e, &axis, &usd).unwrap();
+
+    let next_year = START_TIMESTAMP + 365 * 86_400;
+    oracle_client(&e).set_price(&Asset::Stellar(usd.clone()), &(2 * UNIT_PRICE), &next_year);
+    client.requote(&usd, &eur);
+    assert_eq!(cached_price(&e, &axis, &usd), Some(cached));
+}
+
+#[test]
+fn test_cached_price_dated_ahead_of_the_ledger_values_nothing() {
+    // the cache never takes such a record, and one would never age if it did
+    let (e, trader, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    fund(&e, &usd, &axis, &trader, 10000);
+    open_market(&client, &usd, &eur);
+    for asset in [&usd, &eur] {
+        let record = PriceCache {
+            price: UNIT_PRICE,
+            timestamp: START_TIMESTAMP + 86_400,
+            decimals: ORACLE_DECIMALS,
+        };
+        e.as_contract(&axis, || e.storage().temporary().set(asset, &record));
+    }
+    assert_eq!(
+        try_limit(
+            &client,
+            TradeDirection::Sell,
+            &trader,
+            1000,
+            &usd,
+            &eur,
+            PRECISION
+        ),
+        Some(722)
+    );
+}
+
+#[test]
 #[should_panic(expected = "#722")]
 fn test_missing_quote_fails() {
     // neither asset has a quote, so there is nothing to value the order on

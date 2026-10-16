@@ -2,7 +2,8 @@
 //! despite enough backing, is skipped with a `skip` event; a taker who cannot receive the asset
 //! (a deauthorized or full trustline) fails the trade without flagging any maker. A payment that
 //! fails, whether the taker cannot pay or the maker's line for the payment is full, fails the
-//! trade with the token's own error: no probe transfer spends the payer's allowance.
+//! trade with the token's own error: no probe transfer spends the payer's allowance. A transfer
+//! answering with anything other than SEP-41's unit result fails the trade as well.
 use super::mock_token::{MockToken, MockTokenClient};
 use super::setup::{
     actor, approve, assert_no_custody, authorize, balance, code, fake_asset_auth_required,
@@ -13,6 +14,7 @@ use crate::events::OrderSkippedEvent;
 use crate::order::{order_id, OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, AxisClient};
 use soroban_sdk::testutils::Events as _;
+use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{token::StellarAssetClient, Address, Env, Event, Vec};
 
 /// USD replaced by an asset whose issuer can revoke authorization
@@ -503,4 +505,62 @@ fn test_trade_into_an_auth_required_asset_needs_the_contract_authorized() {
     assert_eq!(balance(&e, &regulated, &taker), 1000);
     assert_eq!(balance(&e, &usd, &maker), 1000);
     assert_no_custody(&e, &axis, &[&usd, &regulated]);
+}
+
+/// Sell 1000 EUR into a maker order of a token answering its transfers with the `bool`s given to
+/// `set_answers`: the trade fails like a plain token call would, nothing moves and the order stays
+fn assert_answering_token_fails_the_trade(transfer_from: Option<bool>, transfer: Option<bool>) {
+    let (e, maker, _, _, eur) = setup_test();
+    let (token, token_client) = capped_asset(&e);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let taker = actor(&e);
+    fund(&e, &token, &axis, &maker, 1000);
+    fund(&e, &eur, &axis, &taker, 1000);
+    let id = store_order(&client, &maker, 1000, &token, &eur, PRECISION);
+    token_client.set_answers(&transfer_from, &transfer);
+
+    let res = client.try_trade(
+        &TradeDirection::Sell,
+        &OrderKind::Fill,
+        &taker,
+        &1000,
+        &eur,
+        &token,
+        &PRECISION,
+        &Vec::from_array(&e, [id]),
+        &nonce(),
+        &0,
+        &None,
+    );
+    // none of the contract's own errors: the call traps on the answer it cannot decode
+    assert!(
+        matches!(res, Err(Ok(err)) if !err.is_type(ScErrorType::Contract)),
+        "{:?}",
+        res
+    );
+    assert_eq!(client.order(&id).unwrap().amount, 1000);
+    assert_eq!(balance(&e, &token, &maker), 1000);
+    assert_eq!(balance(&e, &token, &taker), 0);
+    assert_eq!(balance(&e, &eur, &taker), 1000);
+    assert_no_custody(&e, &axis, &[&token, &eur]);
+}
+
+#[test]
+fn test_maker_transfer_answering_false_fails_the_trade() {
+    // an ERC-20-style `false` moved nothing: taking it for a delivery would have the taker pay
+    // the maker for nothing
+    assert_answering_token_fails_the_trade(Some(false), None);
+}
+
+#[test]
+fn test_maker_transfer_answering_true_fails_the_trade() {
+    // an ERC-20-style `true` moved the asset: skipping the maker would strand it in the contract
+    assert_answering_token_fails_the_trade(Some(true), None);
+}
+
+#[test]
+fn test_forwarding_transfer_answering_false_fails_the_trade() {
+    // the maker delivered, but the transfer forwarding the asset to the taker moved nothing
+    assert_answering_token_fails_the_trade(None, Some(false));
 }

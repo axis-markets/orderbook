@@ -170,6 +170,7 @@ impl Axis {
         let mut dispatcher = Dispatcher::new(
             &e,
             trader.clone(),
+            trader.clone(),
             selling.clone(),
             buying.clone(),
             trader.clone(),
@@ -464,6 +465,7 @@ impl Axis {
             let step = path.get(i).unwrap();
             let mut dispatcher = Dispatcher::new(
                 &e,
+                trader.clone(),
                 axis.clone(),
                 sell_asset(i),
                 step.asset.clone(),
@@ -535,6 +537,7 @@ impl Axis {
             let last = i == hops - 1;
             let mut dispatcher = Dispatcher::new(
                 &e,
+                trader.clone(),
                 if first { trader.clone() } else { axis.clone() },
                 sell_asset(i),
                 step.asset.clone(),

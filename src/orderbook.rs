@@ -158,8 +158,10 @@ pub(crate) fn cross_orders(
     order::require_can_receive(e, &buying, trader);
     //on-book orders are sell-equivalent, so cross from the sell side
     let max_exec_price = get_price_threshold(e, &TradeDirection::Sell, taker_order.price);
+    //the owner pays the makers, the fills are reported for the trader, who takes them and the taker order
     let mut dispatcher = Dispatcher::new(
         e,
+        trader.clone(),
         owner.clone(),
         selling.clone(),
         buying.clone(),

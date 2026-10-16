@@ -23,9 +23,9 @@ pub struct PriceCache {
     pub decimals: u32,
 }
 
-/// Elapsed time since `timestamp`, zero for timestamps ahead of the ledger clock
-fn age(now: u64, timestamp: u64) -> u64 {
-    now.saturating_sub(timestamp)
+/// Elapsed time since `timestamp`, `None` for a timestamp ahead of the ledger clock
+fn age(now: u64, timestamp: u64) -> Option<u64> {
+    now.checked_sub(timestamp)
 }
 
 /// Pull fresh quotes for the market's oracle-listed assets into the cache. A failed or empty
@@ -47,8 +47,9 @@ fn fetch_price(e: &Env, client: &ReflectorBeamClient, decimals: u32, asset: &Add
         &Asset::Stellar(asset.clone()),
     );
     //the oracle is unreachable, out of access or has no quote: keep the last known price
+    //do not allow oracle prices with future timestamps
     let data = match quote {
-        Ok(Ok(Some(data))) if data.price > 0 => data,
+        Ok(Ok(Some(data))) if data.price > 0 && data.timestamp <= e.ledger().timestamp() => data,
         _ => return,
     };
     let cached: Option<PriceCache> = e.storage().temporary().get(asset);
@@ -73,12 +74,15 @@ fn fetch_price(e: &Env, client: &ReflectorBeamClient, decimals: u32, asset: &Add
 
 /// Asset price in oracle base currency, read from the cache only: the oracle is never called
 /// here. `None` for a missing record, one cached in other decimals than `decimals` (the current
-/// oracle's), or one older than `MAX_PRICE_AGE`
+/// oracle's), one older than `MAX_PRICE_AGE`, or one dated ahead of the ledger
 fn cached_price(e: &Env, asset: &Address, decimals: u32) -> Option<i128> {
     let now = e.ledger().timestamp();
     let cached: Option<PriceCache> = e.storage().temporary().get(asset);
     match cached {
-        Some(cache) if cache.decimals == decimals && age(now, cache.timestamp) <= MAX_PRICE_AGE => {
+        Some(cache)
+            if cache.decimals == decimals
+                && age(now, cache.timestamp).is_some_and(|age| age <= MAX_PRICE_AGE) =>
+        {
             Some(cache.price)
         }
         _ => None,

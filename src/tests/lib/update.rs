@@ -5,6 +5,7 @@ use super::setup::{
     store_order, trade, try_update_one, update_one, LPD, MIN_PERSISTENT_TTL, ORACLE_DECIMALS,
 };
 use crate::events::OrderUpdatedEvent;
+use crate::math::{MAX_PRICE, MIN_PRICE};
 use crate::order::{OrderKind, TradeDirection};
 use crate::trade::OrderUpdate;
 use crate::{orderbook::PRECISION, AxisClient};
@@ -73,13 +74,15 @@ fn test_update_validates_amount_price_and_size() {
         try_update_one(&client, &trader, order_update(id, -1, PRECISION)),
         Some(706)
     );
-    assert_eq!(
-        try_update_one(&client, &trader, order_update(id, 500, 0)),
-        Some(705)
-    );
+    for price in [0, MIN_PRICE - 1, MAX_PRICE + 1] {
+        assert_eq!(
+            try_update_one(&client, &trader, order_update(id, 500, price)),
+            Some(705)
+        );
+    }
     // 1 USD stroop at the lowest price is worth nothing
     assert_eq!(
-        try_update_one(&client, &trader, order_update(id, 1, 1)),
+        try_update_one(&client, &trader, order_update(id, 1, MIN_PRICE)),
         Some(720)
     );
     // below the minimum order value once USD is quoted at 1 USD per whole token

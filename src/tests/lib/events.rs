@@ -6,8 +6,8 @@
 //! contract (SAC token events are excluded by `filter_by_contract`).
 
 use super::setup::{
-    actor, fake_asset, fund, no_orders, register_axis, remove_orders, setup_test, store_order,
-    trade,
+    actor, assert_trades_match_balances, balances, fake_asset, fund, no_orders, register_axis,
+    remove_orders, setup_test, store_order, trade,
 };
 use crate::events::{OrderCreatedEvent, OrderUpdatedEvent, SwapEvent, TradeEvent};
 use crate::order::{OrderKind, TradeDirection};
@@ -250,7 +250,8 @@ fn test_no_events_when_nothing_matches() {
 
 #[test]
 fn test_swap_event_sell() {
-    // Sell 1000 USD -> EUR -> GBP yields 757 GBP; the contract is the taker of the second hop.
+    // Sell 1000 USD -> EUR -> GBP yields 757 GBP. The contract pays the second hop's maker, but
+    // both fills are the trader's.
     let (e, trader, issuer, usd, eur) = setup_test();
     let gbp = fake_asset(&e, &issuer);
     let contract = register_axis(&e);
@@ -264,6 +265,9 @@ fn test_swap_event_sell() {
 
     let o1 = store_order(&client, &maker1, 833, &eur, &usd, EUR_USD);
     let o2 = store_order(&client, &maker2, 757, &gbp, &eur, GBP_EUR);
+    let accounts = [&trader, &maker1, &maker2, &contract];
+    let assets = [&usd, &eur, &gbp];
+    let before = balances(&e, &accounts, &assets);
 
     let path = Vec::from_array(
         &e,
@@ -291,7 +295,7 @@ fn test_swap_event_sell() {
 
     // events for the swap invocation: 2 trades (front to back), 1 swap
     let trade1 = trade_event(o1, &trader, &maker1, &usd, &eur, 1000, 833, 0);
-    let trade2 = trade_event(o2, &contract, &maker2, &eur, &gbp, 833, 757, 0);
+    let trade2 = trade_event(o2, &trader, &maker2, &eur, &gbp, 833, 757, 0);
     let swap = SwapEvent {
         selling: usd.clone(),
         buying: gbp.clone(),
@@ -307,6 +311,8 @@ fn test_swap_event_sell() {
             swap.to_xdr(&e, &contract),
         ]
     );
+    // per account the fills add up to what moved: the contract never shows up
+    assert_trades_match_balances(&e, &[trade1, trade2], &accounts, &assets, &before);
 }
 
 #[test]
@@ -326,6 +332,9 @@ fn test_swap_event_buy() {
 
     let o1 = store_order(&client, &maker1, 110, &eur, &usd, EUR_USD);
     let o2 = store_order(&client, &maker2, 100, &gbp, &eur, GBP_EUR);
+    let accounts = [&trader, &maker1, &maker2, &contract];
+    let assets = [&usd, &eur, &gbp];
+    let before = balances(&e, &accounts, &assets);
 
     let path = Vec::from_array(
         &e,
@@ -352,7 +361,7 @@ fn test_swap_event_buy() {
     assert_eq!((sold, bought), (132, 100));
 
     let trade1 = trade_event(o1, &trader, &maker1, &usd, &eur, 132, 110, 0);
-    let trade2 = trade_event(o2, &contract, &maker2, &eur, &gbp, 110, 100, 0);
+    let trade2 = trade_event(o2, &trader, &maker2, &eur, &gbp, 110, 100, 0);
     let swap = SwapEvent {
         selling: usd.clone(),
         buying: gbp.clone(),
@@ -368,4 +377,6 @@ fn test_swap_event_buy() {
             swap.to_xdr(&e, &contract),
         ]
     );
+    // per account the fills add up to what moved: the contract never shows up
+    assert_trades_match_balances(&e, &[trade1, trade2], &accounts, &assets, &before);
 }

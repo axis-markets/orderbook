@@ -28,8 +28,10 @@ struct MakerCapacity {
 
 pub(crate) struct Dispatcher {
     e: Env,
-    /// Account paying for the fills
+    /// Account that moves the tokens
     taker: Address,
+    /// Account paying the makers, unless `intermediate`
+    payer: Address,
     /// Asset the taker pays with
     pay_asset: Address,
     /// Asset the taker acquires
@@ -50,9 +52,11 @@ pub(crate) struct Dispatcher {
 }
 
 impl Dispatcher {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e: &Env,
         taker: Address,
+        payer: Address,
         pay_asset: Address,
         get_asset: Address,
         receiver: Address,
@@ -62,6 +66,7 @@ impl Dispatcher {
         Dispatcher {
             e: e.clone(),
             taker,
+            payer,
             pay_asset,
             get_asset,
             receiver,
@@ -136,12 +141,13 @@ impl Dispatcher {
         worst
     }
 
-    /// Settle every fill maker by maker. Maker's assets go to the contract, the taker's asset to
+    /// Settle every fill maker by maker. Maker's assets go to the contract, the payer's asset to
     /// the maker, and the contract forwards the makers' assets to the receiver in one transfer at
     /// the end. Skipped orders are reported with `skip` events. A maker whose asset cannot be
     /// collected is skipped, a payment that fails ends the call with the token's error whoever
     /// is at fault, and a receiver that refuses the acquired asset fails the call(`CannotReceive`)
-    /// rather than skipping the makers.
+    /// rather than skipping the makers. A transfer answering with anything other than SEP-41's
+    /// unit result fails the call.
     /// Returns the amounts the taker actually sold and bought, and the highest order price among
     /// the settled fills (0 when nothing settled)
     pub fn settle(self) -> (i128, i128, i128) {
@@ -173,7 +179,7 @@ impl Dispatcher {
                 get_token.transfer_from(&axis, &maker, &axis, &maker_sends);
                 //taker part
                 match self.intermediate {
-                    false => pay_token.transfer_from(&axis, &self.taker, &maker, &maker_gets),
+                    false => pay_token.transfer_from(&axis, &self.payer, &maker, &maker_gets),
                     true => pay_token.transfer(&axis, &maker, &maker_gets),
                 }
             } else if !self.settle_final(&get_token, &pay_token, &maker, maker_sends, maker_gets) {
@@ -211,12 +217,13 @@ impl Dispatcher {
         if self.receiver != axis && total_bought > 0 {
             if self.strict {
                 get_token.transfer(&axis, &self.receiver, &total_bought);
-            } else if get_token
-                .try_transfer(&axis, &self.receiver, &total_bought)
-                .is_err()
-            {
-                //a receiver that refuses it is not the makers' fault
-                e.panic_with_error(OrderbookError::CannotReceive);
+            } else {
+                match get_token.try_transfer(&axis, &self.receiver, &total_bought) {
+                    //a result other than SEP-41's unit fails the call, as a plain call does
+                    Ok(result) => result.unwrap(),
+                    //a receiver that refuses it is not the makers' fault
+                    Err(_) => e.panic_with_error(OrderbookError::CannotReceive),
+                }
             }
         }
         for id in skipped.iter() {
@@ -225,10 +232,11 @@ impl Dispatcher {
         (total_sold, total_bought, worst_price)
     }
 
-    /// Settle a maker in lenient mode: the maker's asset goes to the contract, the taker's
+    /// Settle a maker in lenient mode: the maker's asset goes to the contract, the payer's
     /// asset to the maker. Returns `false` when the maker's asset cannot be collected, with
-    /// nothing moved. A payment that fails, whether the taker cannot pay or the maker cannot
-    /// be credited, fails the call with the token's error
+    /// nothing moved. A payment that fails, whether the payer cannot pay or the maker cannot
+    /// be credited, fails the call with the token's error, and so does a transfer answering with
+    /// anything other than SEP-41's unit result
     fn settle_final(
         &self,
         receiving: &token::Client,
@@ -240,14 +248,14 @@ impl Dispatcher {
         let e = &self.e;
         let axis = e.current_contract_address();
         //maker part
-        if receiving
-            .try_transfer_from(&axis, maker, &axis, &maker_sends)
-            .is_err()
-        {
-            return false;
+        match receiving.try_transfer_from(&axis, maker, &axis, &maker_sends) {
+            //a result other than SEP-41's unit fails the call like a plain call - the maker can be neither trusted nor skipped
+            Ok(result) => result.unwrap(),
+            //the maker's asset cannot be collected
+            Err(_) => return false,
         }
         //taker part
-        sending.transfer_from(&axis, &self.taker, maker, &maker_gets);
+        sending.transfer_from(&axis, &self.payer, maker, &maker_gets);
         true
     }
 }

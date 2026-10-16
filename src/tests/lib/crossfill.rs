@@ -1,7 +1,8 @@
 use super::mock_token::{MockToken, MockTokenClient};
 use super::setup::{
-    actor, approve, assert_no_custody, authorize, balance, code, fake_asset_auth_required, fund,
-    list_asset, no_orders, register_axis, setup_test, store_order, UNIT_PRICE,
+    actor, approve, assert_no_custody, assert_trades_match_balances, authorize, balance, balances,
+    code, fake_asset_auth_required, fund, list_asset, no_orders, register_axis, setup_test,
+    store_order, UNIT_PRICE,
 };
 use crate::events::{OrderSkippedEvent, TradeEvent};
 use crate::{orderbook::PRECISION, AxisClient};
@@ -132,6 +133,8 @@ fn test_crossfill_pays_the_spread_to_the_trader() {
     let (e, _trader, _issuer, usd, eur) = setup_test();
     let (client, arbitrageur, taker_owner, maker, taker_order_id, maker_order_id) =
         setup_cross(&e, &usd, &eur, PRECISION, 1200, 8 * PRECISION / 10);
+    let accounts = [&arbitrageur, &taker_owner, &maker, &client.address];
+    let before = balances(&e, &accounts, &[&usd, &eur]);
 
     let orders = Vec::from_array(&e, [maker_order_id]);
     let (sold, bought, profit) = client.crossfill(&arbitrageur, &taker_order_id, &orders);
@@ -147,12 +150,14 @@ fn test_crossfill_pays_the_spread_to_the_trader() {
     assert_eq!(client.order(&taker_order_id).unwrap().amount, 40);
     assert!(client.order(&maker_order_id).is_none());
 
-    // two trades: the maker fill (owner as taker) and the taker order's own fill
+    // two trades, both taken by the trader: the maker fill (paid by the owner) and the taker
+    // order's own fill. Per account they add up to the balance changes: the trader gains the
+    // 240 EUR spread, the owner sells 960 USD for 960 EUR
     let maker_fill = TradeEvent {
         selling: usd.clone(),
         buying: eur.clone(),
         order: maker_order_id,
-        taker: taker_owner.clone(),
+        taker: arbitrageur.clone(),
         maker: maker.clone(),
         sold: 960,
         bought: 1200,
@@ -174,6 +179,13 @@ fn test_crossfill_pays_the_spread_to_the_trader() {
             maker_fill.to_xdr(&e, &client.address),
             taker_fill.to_xdr(&e, &client.address)
         ]
+    );
+    assert_trades_match_balances(
+        &e,
+        &[maker_fill, taker_fill],
+        &accounts,
+        &[&usd, &eur],
+        &before,
     );
 }
 

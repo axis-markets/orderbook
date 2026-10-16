@@ -1,4 +1,5 @@
 use super::mock_oracle::{MockOracle, MockOracleClient};
+use crate::events::TradeEvent;
 use crate::market::Config;
 use crate::order::{OrderKind, TradeDirection};
 use crate::reflector_beam::Asset;
@@ -142,6 +143,56 @@ pub fn fund(e: &Env, asset: &Address, axis: &Address, account: &Address, amount:
 /// Token balance
 pub fn balance(e: &Env, asset: &Address, account: &Address) -> i128 {
     token::Client::new(e, asset).balance(account)
+}
+
+/// Balances of every account in every asset, account by account
+pub fn balances(e: &Env, accounts: &[&Address], assets: &[&Address]) -> Vec<i128> {
+    let mut all = Vec::new(e);
+    for account in accounts {
+        for asset in assets {
+            all.push_back(balance(e, asset, account));
+        }
+    }
+    all
+}
+
+/// Assert that the `trade` events add up, per account and asset, to the balance changes since
+/// `before` (read with `balances`): a taker pays `sold` of `selling` and gets `bought` of
+/// `buying`, its maker the other way round
+pub fn assert_trades_match_balances(
+    e: &Env,
+    trades: &[TradeEvent],
+    accounts: &[&Address],
+    assets: &[&Address],
+    before: &Vec<i128>,
+) {
+    let after = balances(e, accounts, assets);
+    let mut i = 0;
+    for account in accounts {
+        for asset in assets {
+            let mut traded = 0;
+            for trade in trades {
+                for (party, token, amount) in [
+                    (&trade.taker, &trade.selling, -trade.sold),
+                    (&trade.taker, &trade.buying, trade.bought),
+                    (&trade.maker, &trade.selling, trade.sold),
+                    (&trade.maker, &trade.buying, -trade.bought),
+                ] {
+                    if party == *account && token == *asset {
+                        traded += amount;
+                    }
+                }
+            }
+            assert_eq!(
+                traded,
+                after.get_unchecked(i) - before.get_unchecked(i),
+                "trades of {} in {}",
+                shorten(account),
+                shorten(asset)
+            );
+            i += 1;
+        }
+    }
 }
 
 /// The contract holds none of `assets`

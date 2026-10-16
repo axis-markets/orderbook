@@ -1,7 +1,7 @@
 //! Fixed-point arithmetic with the 256-bit fallback.
 use crate::math::{
     invert_price_ceil, invert_price_floor, is_dust, mul_div_ceil, mul_div_floor, MAX_PRICE,
-    PRECISION,
+    MIN_PRICE, PRECISION,
 };
 use soroban_sdk::Env;
 
@@ -69,9 +69,12 @@ fn test_invert_price() {
         333_333_333_333_333_334
     );
     // the extremes map onto each other
-    assert_eq!(invert_price_floor(&e, 1), MAX_PRICE);
-    assert_eq!(invert_price_floor(&e, MAX_PRICE), 1);
-    assert_eq!(invert_price_ceil(&e, MAX_PRICE), 1);
+    assert_eq!(invert_price_floor(&e, MIN_PRICE), MAX_PRICE);
+    assert_eq!(invert_price_ceil(&e, MIN_PRICE), MAX_PRICE);
+    assert_eq!(invert_price_floor(&e, MAX_PRICE), MIN_PRICE);
+    assert_eq!(invert_price_ceil(&e, MAX_PRICE), MIN_PRICE);
+    // the coarsest inverse rounds up by a single step, 1% of the lowest price
+    assert_eq!(invert_price_ceil(&e, MAX_PRICE - 1), MIN_PRICE + 1);
 }
 
 #[test]

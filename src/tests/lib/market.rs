@@ -10,6 +10,7 @@ use super::setup::{
 };
 use crate::events::MarketRefreshEvent;
 use crate::market::{canonical, DataKey};
+use crate::math::{MAX_PRICE, MIN_PRICE};
 use crate::order::{OrderKind, TradeDirection};
 use crate::orderbook::PRECISION;
 use crate::reflector_beam::Asset;
@@ -507,7 +508,7 @@ fn test_oracle_switch_delists_assets_beyond_the_decimals_cap() {
 fn test_trade_rejects_prices_out_of_range() {
     let (e, trader, _, usd, eur) = setup_test();
     let client = AxisClient::new(&e, &register_axis(&e));
-    for price in [0, -1, PRECISION * PRECISION + 1] {
+    for price in [0, -1, MIN_PRICE - 1, MAX_PRICE + 1] {
         assert_eq!(
             try_trade(
                 &client,
@@ -521,6 +522,23 @@ fn test_trade_rejects_prices_out_of_range() {
                 &no_orders(&e),
             ),
             Some(705)
+        );
+    }
+    // the bounds themselves are accepted
+    for price in [MIN_PRICE, MAX_PRICE] {
+        assert_eq!(
+            try_trade(
+                &client,
+                TradeDirection::Sell,
+                OrderKind::Fill,
+                &trader,
+                1000,
+                &usd,
+                &eur,
+                price,
+                &no_orders(&e),
+            ),
+            None
         );
     }
 }

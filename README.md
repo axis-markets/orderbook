@@ -342,12 +342,14 @@ event names it. The same happens when the maker's transfer fails despite the bac
 deauthorized trustline). The payment to the maker is never probed: when it fails, whether the taker cannot pay or the
 maker cannot be credited although authorized (e.g. a classic trustline with limit, which `authorized` does not show),
 the call fails with the token's own error, nothing moves and no maker is flagged, the caller leaves that maker out and
-retries. Telling the two apart would take a probe transfer that spends the payer's allowance, and in
-`crossfill` the payer is the order owner, who did not sign the call. A taker who cannot receive the bought asset fails
-the trade with `CannotReceive`. Matching never removes, trims or caps an order. Routers should compute the effective
-depth per maker and asset as `min(balance, allowance)` shared across that maker's orders, treat the allowance's
-`live_until_ledger` as an expiry, check that the maker's line for the taker's asset has room for the payment, and use
-`skip` events to stop proposing orders of makers that fail to settle.
+retries. Telling the two apart would take a probe transfer that spends the payer's allowance, and in `crossfill` the
+payer is the order owner, who did not sign the call. A taker who cannot receive the bought asset fails the trade with
+`CannotReceive`. A token whose `transfer` or `transfer_from` answers with anything other than SEP-41's empty result
+fails the call as well - it's impossible to tell whether it moved the tokensd. Matching never removes, trims or caps an
+order. Routers should compute the effective depth per maker and asset as `min(balance, allowance)`
+shared across that maker's orders, treat the allowance's `live_until_ledger` as an expiry, check that the maker's line
+for the taker's asset has room for the payment, and use `skip` events to stop proposing orders of makers that fail to
+settle.
 
 ## Rounding
 
@@ -368,6 +370,22 @@ amount covers it; buying pays `ceil(bought × order.price / 10^18)`. `swap` also
 The limit is not enforced on the rounded amounts on purpose: that would refuse a fill at the limit price whenever the
 amounts do not divide exactly, and the 18-decimal inverse of a price is itself rounded, so even exact fills against an
 order priced at the inverted limit would fall a fraction of a unit short of it.
+
+Prices range from 100 to 10^34 (10^-16 to 10^16 base units bought per base unit sold), outside of it a trade or an
+update fails with `InvalidPrice`. The two bounds are each other's inverse, and within them a price, or the rounded
+inverse a `Buy` remainder is stored at, moves in steps of at most 1%: a `Buy` remainder never asks more than 1% over the
+trader's target, plus the rounding of the amounts.
+
+An order remainder worth less than one base unit of the asset it buys (`floor(amount × price / 10^18) = 0`) could only
+be filled by a taker paying a whole unit for it, so a fill that leaves less removes the order (the `trade` event reports
+`left = 0`), and `trade` and `update` refuse to create one (`OrderSizeTooSmall`). The owner keeps the tokens. The value
+dropped this way stays below one base unit of the other asset at any price, which only matters for assets with few
+decimals.
+
+A `Sell` `FillOrKill` counts as executed when what is left of `amount` cannot buy a single base unit of `buying` at the
+highest order price filled; the leftover stays with the trader. It is always worth less than one base unit of
+`buying` and less than the amount sold, so for an asset with few decimals a trade buying a single unit may leave up to
+almost half of `amount` unspent. A `Buy` `FillOrKill` fixes the amount received instead.
 
 ## Order ids
 
@@ -573,10 +591,10 @@ positive amount, burning only what it is given; a zero or negative amount is `In
 access is bought per asset, so a market whose assets other markets already provision can value its orders right away;
 one whose assets nobody provisions needs a subsidy before its orders can be valued.
 
-Prices are cached per asset together with the decimals of the oracle that quoted them. After `set_oracle` the cached
-prices keep valuing orders, until they reach the 72-hour age limit, when the new oracle quotes with the same decimals,
-and read as missing when it does not. The new oracle has to be provisioned (`subsidize`) before `requote` can refresh
-them.
+Prices are cached per asset together with the decimals of the oracle that quoted them. A quote dated after the ledger
+close time would never age, so it is ignored and the previous price stays. After `set_oracle` the cached prices keep
+valuing orders, until they reach the 72-hour age limit, when the new oracle quotes with the same decimals, and read as
+missing when it does not. The new oracle has to be provisioned (`subsidize`) before `requote` can refresh them.
 
 ## Frozen mode
 
@@ -617,6 +635,14 @@ Topics: `["trade", selling: Address, buying: Address]` (assets sold and bought b
 Data: `[order: u128, taker: Address, maker: Address, sold: i128, bought: i128, left: i128]`
 `left` is the order amount after the fill, `0` when the order was filled in full (or what is left became dust) and
 removed.
+
+`taker` is the account the fill is made for, even where the contract moves the tokens: the trader of a `trade`, the
+trader on every `swap` hop (the contract pays the makers of the later hops out of the previous hop), and the caller on
+every `crossfill` fill (the taker order owner pays the makers). A `crossfill` also reports the fill of the taker order
+after the maker fills: the caller as the taker, the owner as the maker, in the opposite direction, for what the owner
+paid the makers and is paid in return. So the `trade` events of a call, summed per account, give each account's net
+token movement: a `swap` trader nets the route's input and output, a `crossfill` caller nets the surplus, and the
+contract never shows up.
 
 ### `swap`
 

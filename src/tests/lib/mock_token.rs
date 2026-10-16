@@ -1,8 +1,11 @@
 //! Minimal token with per-account holding limits, standing in for a classic trustline limit (the
 //! test environment has no trustlines). Receiving more than the limit fails, like a full trustline.
 //! It exposes no `authorized`, so Axis treats every account as able to receive it. Its decimals
-//! (7 by default) can be changed to exercise high-precision tokens.
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+//! (7 by default) can be changed to exercise high-precision tokens, and its transfers can answer
+//! like an ERC-20 token, with a `bool` instead of SEP-41's unit result.
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, IntoVal, Val,
+};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -21,6 +24,10 @@ enum Key {
     Allowance(Address, Address),
     Limit(Address),
     Decimals,
+    /// `bool` answered by `transfer_from`
+    TransferFromAnswer,
+    /// `bool` answered by `transfer`
+    TransferAnswer,
 }
 
 #[contract]
@@ -54,6 +61,19 @@ fn receive(e: &Env, to: &Address, amount: i128) {
         .set(&Key::Balance(to.clone()), &balance);
 }
 
+/// Answer of a transfer: SEP-41's unit result, or the `bool` set with `set_answers`; the tokens
+/// move unless the answer is `false`
+fn answer(e: &Env, key: Key, transfer: impl FnOnce()) -> Val {
+    let answer: Option<bool> = e.storage().instance().get(&key);
+    if answer != Some(false) {
+        transfer();
+    }
+    match answer {
+        Some(moved) => moved.into_val(e),
+        None => ().into_val(e),
+    }
+}
+
 #[contractimpl]
 impl MockToken {
     // ---- test controls ------------------------------------------------------------------
@@ -66,6 +86,20 @@ impl MockToken {
     /// Change the reported decimals
     pub fn set_decimals(e: Env, decimals: u32) {
         e.storage().instance().set(&Key::Decimals, &decimals);
+    }
+
+    /// Answer `transfer_from` and `transfer` with a `bool` like an ERC-20 token (`true` moves the
+    /// tokens, `false` moves nothing), `None` keeps SEP-41's unit result
+    pub fn set_answers(e: Env, transfer_from: Option<bool>, transfer: Option<bool>) {
+        for (key, answer) in [
+            (Key::TransferFromAnswer, transfer_from),
+            (Key::TransferAnswer, transfer),
+        ] {
+            match answer {
+                Some(answer) => e.storage().instance().set(&key, &answer),
+                None => e.storage().instance().remove(&key),
+            }
+        }
     }
 
     pub fn mint(e: Env, to: Address, amount: i128) {
@@ -96,23 +130,33 @@ impl MockToken {
             .set(&Key::Allowance(from, spender), &amount);
     }
 
-    pub fn transfer(e: Env, from: Address, to: Address, amount: i128) {
+    pub fn transfer(e: Env, from: Address, to: Address, amount: i128) -> Val {
         from.require_auth();
-        spend(&e, &from, amount);
-        receive(&e, &to, amount);
+        answer(&e, Key::TransferAnswer, || {
+            spend(&e, &from, amount);
+            receive(&e, &to, amount);
+        })
     }
 
-    pub fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
+    pub fn transfer_from(
+        e: Env,
+        spender: Address,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) -> Val {
         spender.require_auth();
-        let allowance = Self::allowance(e.clone(), from.clone(), spender.clone());
-        if allowance < amount {
-            e.panic_with_error(MockTokenError::Allowance);
-        }
-        e.storage().persistent().set(
-            &Key::Allowance(from.clone(), spender),
-            &(allowance - amount),
-        );
-        spend(&e, &from, amount);
-        receive(&e, &to, amount);
+        answer(&e, Key::TransferFromAnswer, || {
+            let allowance = Self::allowance(e.clone(), from.clone(), spender.clone());
+            if allowance < amount {
+                e.panic_with_error(MockTokenError::Allowance);
+            }
+            e.storage().persistent().set(
+                &Key::Allowance(from.clone(), spender.clone()),
+                &(allowance - amount),
+            );
+            spend(&e, &from, amount);
+            receive(&e, &to, amount);
+        })
     }
 }

@@ -4,10 +4,10 @@ use soroban_sdk::{Env, U256};
 
 /// Fixed-point price precision (18 decimals)
 pub const PRECISION: i128 = 10i128.pow(18);
-/// Lowest accepted order price
-pub const MIN_PRICE: i128 = 1;
+/// Lowest accepted order price - max 1% rounding deviation on huge price trades
+pub const MIN_PRICE: i128 = 100;
 /// Highest accepted order price, the inverse of `MIN_PRICE`
-pub const MAX_PRICE: i128 = PRECISION * PRECISION;
+pub const MAX_PRICE: i128 = PRECISION * PRECISION / MIN_PRICE;
 
 /// Reject a price outside the accepted range
 #[inline]

@@ -2,6 +2,7 @@ use super::setup::{
     actor, assert_no_custody, balance, fake_asset, fund, no_orders, open_market, register_axis,
     setup_oracle, setup_test, store_order, trade, try_trade,
 };
+use crate::math::{MAX_PRICE, MIN_PRICE};
 use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, AxisClient};
 use soroban_sdk::testutils::Address as _;
@@ -50,6 +51,51 @@ fn test_buy_limit_creates_order() {
     // Nothing moved
     assert_eq!(balance(&e, &eur, &trader), 10000);
     assert_no_custody(&e, &contract_address, &[&usd, &eur]);
+}
+
+#[test]
+fn test_buy_limit_remainder_at_the_coarsest_price_stays_within_one_percent() {
+    // Just below the highest price the inverse rounds up by a whole step: 101 instead of
+    // 100.000...01. The stored order then asks 1% more than the buyer's target, never more
+    let (e, buyer, _, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    open_market(&client, &usd, &eur);
+    let target = 1_000_000;
+    let price = MAX_PRICE - 1;
+    let cost = 10i128.pow(22);
+    fund(&e, &eur, &axis, &buyer, cost);
+
+    let (_, _, id) = trade(
+        &client,
+        TradeDirection::Buy,
+        OrderKind::Limit,
+        &buyer,
+        target,
+        &eur,
+        &usd,
+        price,
+        &no_orders(&e),
+    );
+    let order = client.order(&id.unwrap()).unwrap();
+    assert_eq!((order.amount, order.price), (cost, MIN_PRICE + 1));
+
+    // a seller taking the whole order pays the buyer 1% over the target
+    let seller = actor(&e);
+    fund(&e, &usd, &axis, &seller, 2 * target);
+    let (sold, bought, _) = trade(
+        &client,
+        TradeDirection::Buy,
+        OrderKind::Fill,
+        &seller,
+        cost,
+        &usd,
+        &eur,
+        order.price,
+        &Vec::from_array(&e, [order.id]),
+    );
+    assert_eq!((sold, bought), (target + target / 100, cost));
+    assert_eq!(balance(&e, &usd, &buyer), target + target / 100);
 }
 
 #[test]
