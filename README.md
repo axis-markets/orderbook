@@ -397,9 +397,12 @@ id = u128::from_be_bytes(sha256(xdr([owner, nonce]))[0..16])
 
 Hashed bytes are the XDR of the `ScVal` vector `[owner: Address, nonce: u64]`. The nonce must be unique among the
 owner's live orders (a duplicate fails with `OrderExists`); once the order is gone or has expired the nonce may be
-reused, and a new order overwrites the expired entry (its lifetime is extended as for an `update`). Clients typically
-derive it from the clock plus random bits. The id is known before the transaction is simulated, so the order entry can
-be declared in the footprint.
+reused, even for an order on another pair, and a new order overwrites the expired entry (its lifetime is extended as for
+an `update`). Reusing nonces is not recommended, though: `update` identifies an order by its id alone, so a signed
+update still pending for the previous order would apply to the new order under the same id until its authorization
+expires, changing its amount, price and expiration. Clients typically derive a fresh nonce for every order from the
+clock plus random bits. The id is known before the transaction is simulated, so the order entry can be declared in the
+footprint.
 
 ## Order expiration
 
