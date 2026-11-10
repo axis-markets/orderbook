@@ -4,6 +4,7 @@ mod allowance;
 mod auth;
 mod buy;
 mod crossfill;
+mod custom_token;
 mod dust;
 mod events;
 mod expiration;

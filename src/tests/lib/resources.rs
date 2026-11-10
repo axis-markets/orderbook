@@ -540,3 +540,74 @@ fn gate_fill_max_fills_with_skipped_orders() {
     );
     assert!(u.within_tx_limits(), "{:?}", u);
 }
+
+// ---- custom token -------------------------------------------------------------------------
+
+/// `n` distinct makers trade the test token, a custom token running in the VM, against USD (a
+/// Stellar Asset Contract); one taker `Fill` crosses them all. With `makers_sell` the makers sell
+/// the token (collected from each maker, forwarded to the taker), otherwise they buy it (the taker
+/// pays each maker in the token, and `can_receive` probes it for the missing `authorized` per
+/// maker)
+#[test_case(1, true; "fill 1 custom token sellers")]
+#[test_case(8, true; "fill 8 custom token sellers")]
+#[test_case(MAX_FILLS, true; "fill MAX_FILLS custom token sellers")]
+#[test_case(1, false; "fill 1 custom token buyers")]
+#[test_case(8, false; "fill 8 custom token buyers")]
+#[test_case(MAX_FILLS, false; "fill MAX_FILLS custom token buyers")]
+fn gate_fill_n_custom_token(n: u32, makers_sell: bool) {
+    let (e, taker, _, usd, _) = gate_env();
+    let tkn = super::custom_token::CustomToken::deploy(&e);
+    let contract = register_axis(&e);
+    let client = AxisClient::new(&e, &contract);
+    let (pay, get) = if makers_sell {
+        (&usd, &tkn.address)
+    } else {
+        (&tkn.address, &usd)
+    };
+    let mut ids = Vec::new(&e);
+    for _ in 0..n {
+        let maker = actor(&e);
+        if makers_sell {
+            tkn.fund(&contract, &maker, ORDER_AMOUNT);
+        } else {
+            fund(&e, &usd, &contract, &maker, ORDER_AMOUNT);
+        }
+        ids.push_back(store_order(
+            &client,
+            &maker,
+            ORDER_AMOUNT,
+            get,
+            pay,
+            PRECISION,
+        ));
+    }
+    let amount = n as i128 * ORDER_AMOUNT;
+    if makers_sell {
+        fund(&e, &usd, &contract, &taker, amount);
+    } else {
+        tkn.fund(&contract, &taker, amount);
+    }
+    let (sold, bought, _) = trade(
+        &client,
+        TradeDirection::Sell,
+        OrderKind::Fill,
+        &taker,
+        amount,
+        pay,
+        get,
+        PRECISION,
+        &ids,
+    );
+    assert_eq!((sold, bought), (amount, amount));
+    let side = if makers_sell { "sell" } else { "buy" };
+    let u = measure(
+        &e,
+        &std::format!(
+            "trade Fill crossing {} orders, {} makers {} the custom token",
+            n,
+            n,
+            side
+        ),
+    );
+    assert!(u.within_tx_limits(), "{:?}", u);
+}

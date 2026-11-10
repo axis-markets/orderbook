@@ -190,6 +190,76 @@ fn test_crossfill_pays_the_spread_to_the_trader() {
 }
 
 #[test]
+fn test_crossfill_owner_on_both_sides() {
+    // The owner's taker order (1000 USD for EUR at 1.0) crosses the owner's own maker order
+    // (1200 EUR for USD at 0.8). Each order fills at its own price: the owner pays itself 960 USD,
+    // delivers 1200 EUR and is paid 960 EUR back, the 240 EUR spread goes to the trader. Each
+    // allowance drops by exactly what its order gave up
+    let (e, _trader, _issuer, usd, eur) = setup_test();
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let owner = actor(&e);
+    let arbitrageur = actor(&e);
+    fund(&e, &usd, &axis, &owner, 1000);
+    fund(&e, &eur, &axis, &owner, 1200);
+    let taker_order_id = store_order(&client, &owner, 1000, &usd, &eur, PRECISION);
+    let maker_order_id = store_order(&client, &owner, 1200, &eur, &usd, 8 * PRECISION / 10);
+    // finite allowances, so what the crossfill spends of them shows
+    approve(&e, &usd, &axis, &owner, 5000);
+    approve(&e, &eur, &axis, &owner, 5000);
+    let allowance =
+        |asset: &Address| soroban_sdk::token::Client::new(&e, asset).allowance(&owner, &axis);
+    let accounts = [&arbitrageur, &owner, &axis];
+    let before = balances(&e, &accounts, &[&usd, &eur]);
+
+    let orders = Vec::from_array(&e, [maker_order_id]);
+    let (sold, bought, profit) = client.crossfill(&arbitrageur, &taker_order_id, &orders);
+    let events = e.events().all().filter_by_contract(&axis);
+    assert_eq!((sold, bought, profit), (960, 1200, 240));
+
+    assert_eq!(client.order(&taker_order_id).unwrap().amount, 1000 - 960);
+    assert!(client.order(&maker_order_id).is_none());
+    assert_eq!(allowance(&usd), 5000 - 960);
+    assert_eq!(allowance(&eur), 5000 - 1200);
+    assert_eq!(balance(&e, &usd, &owner), 1000);
+    assert_eq!(balance(&e, &eur, &owner), 1200 - 240);
+    assert_eq!(balance(&e, &eur, &arbitrageur), 240);
+    assert_no_custody(&e, &axis, &[&usd, &eur]);
+
+    let maker_fill = TradeEvent {
+        selling: usd.clone(),
+        buying: eur.clone(),
+        order: maker_order_id,
+        taker: arbitrageur.clone(),
+        maker: owner.clone(),
+        sold: 960,
+        bought: 1200,
+        left: 0,
+    };
+    let taker_fill = TradeEvent {
+        selling: eur.clone(),
+        buying: usd.clone(),
+        order: taker_order_id,
+        taker: arbitrageur.clone(),
+        maker: owner.clone(),
+        sold: 960,
+        bought: 960,
+        left: 40,
+    };
+    assert_eq!(
+        events,
+        [maker_fill.to_xdr(&e, &axis), taker_fill.to_xdr(&e, &axis)]
+    );
+    assert_trades_match_balances(
+        &e,
+        &[maker_fill, taker_fill],
+        &accounts,
+        &[&usd, &eur],
+        &before,
+    );
+}
+
+#[test]
 fn test_crossfill_skips_fills_that_would_underpay_the_owner() {
     // Taker order sells 1 USD wanting 2.5 EUR per USD; maker sells 3 EUR at 0.4 USD per EUR.
     // 1 USD buys floor(2.5) = 2 EUR for ceil(0.8) = 1 USD, but the owner is owed

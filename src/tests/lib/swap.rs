@@ -1,11 +1,13 @@
 use super::setup::{
-    actor, approve, assert_no_custody, authorize, balance, code, fake_asset,
-    fake_asset_auth_required, fund, list_asset, register_axis, setup_test, store_order, try_trade,
-    UNIT_PRICE,
+    actor, approve, assert_no_custody, assert_trades_match_balances, authorize, balance, balances,
+    code, fake_asset, fake_asset_auth_required, fund, list_asset, register_axis, setup_test,
+    store_order, try_trade, UNIT_PRICE,
 };
+use crate::events::{SwapEvent, TradeEvent};
 use crate::order::{OrderKind, TradeDirection};
 use crate::{orderbook::PRECISION, trade::TradeStep, AxisClient};
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::testutils::Events as _;
+use soroban_sdk::{token, Address, Env, Event, Vec};
 
 // Cross rates:
 //   EUR/USD = 1.2  (1 EUR costs 1.2 USD)
@@ -565,4 +567,294 @@ fn test_swap_cyclic_path_respects_the_maker_backing() {
     assert_eq!(balance(&e, &usd, &trader), 1000);
     assert_eq!(balance(&e, &eur, &eur_maker), 150);
     assert_no_custody(&e, &axis, &[&usd, &eur]);
+}
+
+/// Sell 1000 USD -> EUR -> GBP with the trader owning the maker order of hop `trader_hop` and
+/// another maker the other one. Both orders hold 1000, the route fills 833 EUR and 757 GBP
+fn swap_with_the_trader_as_maker(trader_hop: u32) {
+    let (e, trader, issuer, usd, eur) = setup_test();
+    let gbp = fake_asset(&e, &issuer);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let maker = actor(&e);
+    let (eur_owner, gbp_owner) = match trader_hop {
+        0 => (&trader, &maker),
+        _ => (&maker, &trader),
+    };
+    fund(&e, &usd, &axis, &trader, 1000);
+    fund(&e, &eur, &axis, eur_owner, 1000);
+    fund(&e, &gbp, &axis, gbp_owner, 1000);
+    let eur_order = store_order(&client, eur_owner, 1000, &eur, &usd, EUR_USD);
+    let gbp_order = store_order(&client, gbp_owner, 1000, &gbp, &eur, GBP_EUR);
+    // finite allowances, so what the swap spends of them shows
+    let (owned, filled) = match trader_hop {
+        0 => (&eur, 833),
+        _ => (&gbp, 757),
+    };
+    approve(&e, &usd, &axis, &trader, 5000);
+    approve(&e, owned, &axis, &trader, 5000);
+    let allowance =
+        |asset: &Address| soroban_sdk::token::Client::new(&e, asset).allowance(&trader, &axis);
+
+    let path = two_hop_path(&e, &eur, &gbp, eur_order, gbp_order);
+    let (sold, bought) = client.swap(
+        &TradeDirection::Sell,
+        &trader,
+        &usd,
+        &1000,
+        &757,
+        &path,
+        &None,
+    );
+    assert_eq!((sold, bought), (1000, 757));
+
+    // each order shrinks by exactly what its owner's allowance paid out
+    assert_eq!(client.order(&eur_order).unwrap().amount, 1000 - 833);
+    assert_eq!(client.order(&gbp_order).unwrap().amount, 1000 - 757);
+    assert_eq!(allowance(owned), 5000 - filled);
+    // the route input is paid once, to the trader's own order on the first hop too
+    assert_eq!(allowance(&usd), 5000 - 1000);
+
+    // (USD, EUR, GBP) of the trader and of the other maker
+    let holdings = |account: &Address| {
+        (
+            balance(&e, &usd, account),
+            balance(&e, &eur, account),
+            balance(&e, &gbp, account),
+        )
+    };
+    match trader_hop {
+        // the trader pays its own EUR order and sells 833 of its EUR down the route
+        0 => {
+            assert_eq!(holdings(&trader), (1000, 167, 757));
+            assert_eq!(holdings(&maker), (0, 833, 243));
+        }
+        // the contract pays the trader's GBP order the 833 EUR the first hop delivered
+        _ => {
+            assert_eq!(holdings(&trader), (0, 833, 1000));
+            assert_eq!(holdings(&maker), (1000, 167, 0));
+        }
+    }
+    assert_no_custody(&e, &axis, &[&usd, &eur, &gbp]);
+}
+
+#[test]
+fn test_swap_trader_owns_a_hop_order() {
+    // The trader is the maker of the first hop (paying itself from its own allowance) or of the
+    // last one (paid out of the contract): either way its order and allowance move by the fill only
+    swap_with_the_trader_as_maker(0);
+    swap_with_the_trader_as_maker(1);
+}
+
+// Closed route USD -> EUR -> GBP -> USD, priced so that 1000 USD come back as 1280:
+//   1000 USD / 1.25 = 800 EUR, 800 EUR / 1.25 = 640 GBP, 640 GBP / 0.5 = 1280 USD
+const LOOP_EUR_USD: i128 = 5 * PRECISION / 4; // 1.25 USD per EUR
+const LOOP_GBP_EUR: i128 = 5 * PRECISION / 4; // 1.25 EUR per GBP
+const LOOP_USD_GBP: i128 = PRECISION / 2; // 0.5 GBP per USD
+
+/// AXIS with the three markets of the closed route, one maker order each, every one larger than
+/// the route takes (1000 EUR, 1000 GBP, 2000 USD). The trader holds 1000 USD and lets the
+/// contract spend up to 5000 USD
+struct ClosedLoop<'a> {
+    client: AxisClient<'a>,
+    axis: Address,
+    /// Makers selling EUR, GBP and USD
+    makers: [Address; 3],
+    /// Their orders, in route order
+    orders: [u128; 3],
+    path: Vec<TradeStep>,
+}
+
+fn closed_loop<'a>(
+    e: &'a Env,
+    trader: &Address,
+    usd: &Address,
+    eur: &Address,
+    gbp: &Address,
+) -> ClosedLoop<'a> {
+    let axis = register_axis(e);
+    let client = AxisClient::new(e, &axis);
+    let makers = [actor(e), actor(e), actor(e)];
+    fund(e, eur, &axis, &makers[0], 1000);
+    fund(e, gbp, &axis, &makers[1], 1000);
+    fund(e, usd, &axis, &makers[2], 2000);
+    let orders = [
+        store_order(&client, &makers[0], 1000, eur, usd, LOOP_EUR_USD),
+        store_order(&client, &makers[1], 1000, gbp, eur, LOOP_GBP_EUR),
+        store_order(&client, &makers[2], 2000, usd, gbp, LOOP_USD_GBP),
+    ];
+    fund(e, usd, &axis, trader, 1000);
+    // a finite allowance, so what the swap spends of it shows
+    approve(e, usd, &axis, trader, 5000);
+    let step = |asset: &Address, order: u128| TradeStep {
+        asset: asset.clone(),
+        orders: Vec::from_array(e, [order]),
+    };
+    let path = Vec::from_array(
+        e,
+        [
+            step(eur, orders[0]),
+            step(gbp, orders[1]),
+            step(usd, orders[2]),
+        ],
+    );
+    ClosedLoop {
+        client,
+        axis,
+        makers,
+        orders,
+        path,
+    }
+}
+
+#[test]
+fn test_swap_closed_loop_sell() {
+    // The route ends in the asset it starts from. The trader pays the EUR maker 1000 USD out of
+    // the allowance, the contract pays the GBP and USD makers out of what the previous hop
+    // delivered and sends the 1280 USD of the last hop to the trader in one transfer: the trader
+    // nets 280 USD, the allowance drops by the 1000 sold only
+    let (e, trader, issuer, usd, eur) = setup_test();
+    let gbp = fake_asset(&e, &issuer);
+    let l = closed_loop(&e, &trader, &usd, &eur, &gbp);
+    let [eur_maker, gbp_maker, usd_maker] = &l.makers;
+    let accounts = [&trader, eur_maker, gbp_maker, usd_maker, &l.axis];
+    let assets = [&usd, &eur, &gbp];
+    let before = balances(&e, &accounts, &assets);
+
+    let res = l.client.swap(
+        &TradeDirection::Sell,
+        &trader,
+        &usd,
+        &1000,
+        &1280,
+        &l.path,
+        &None,
+    );
+    let events = e.events().all().filter_by_contract(&l.axis);
+    assert_eq!(res, (1000, 1280));
+
+    let fill = |order: u128, maker: &Address, pay: &Address, get: &Address, sold, bought, left| {
+        TradeEvent {
+            selling: pay.clone(),
+            buying: get.clone(),
+            order,
+            taker: trader.clone(),
+            maker: maker.clone(),
+            sold,
+            bought,
+            left,
+        }
+    };
+    let fills = [
+        fill(l.orders[0], eur_maker, &usd, &eur, 1000, 800, 200),
+        fill(l.orders[1], gbp_maker, &eur, &gbp, 800, 640, 360),
+        fill(l.orders[2], usd_maker, &gbp, &usd, 640, 1280, 720),
+    ];
+    let swap = SwapEvent {
+        selling: usd.clone(),
+        buying: usd.clone(),
+        trader: trader.clone(),
+        sold: 1000,
+        bought: 1280,
+    };
+    assert_eq!(
+        events,
+        [
+            fills[0].to_xdr(&e, &l.axis),
+            fills[1].to_xdr(&e, &l.axis),
+            fills[2].to_xdr(&e, &l.axis),
+            swap.to_xdr(&e, &l.axis),
+        ]
+    );
+    assert_trades_match_balances(&e, &fills, &accounts, &assets, &before);
+
+    assert_eq!(balance(&e, &usd, &trader), 1280);
+    assert_eq!(balance(&e, &eur, &trader), 0);
+    assert_eq!(balance(&e, &gbp, &trader), 0);
+    assert_eq!(
+        token::Client::new(&e, &usd).allowance(&trader, &l.axis),
+        5000 - 1000
+    );
+    assert_eq!(l.client.order(&l.orders[0]).unwrap().amount, 200);
+    assert_eq!(l.client.order(&l.orders[1]).unwrap().amount, 360);
+    assert_eq!(l.client.order(&l.orders[2]).unwrap().amount, 720);
+    assert_no_custody(&e, &l.axis, &assets);
+}
+
+#[test]
+fn test_swap_closed_loop_buy() {
+    // Buy exactly 640 USD spending at most 1000: planned back to front, 640 USD cost 320 GBP,
+    // 320 GBP cost 400 EUR, 400 EUR cost 500 USD. The trader keeps the 500 USD it did not sell
+    let (e, trader, issuer, usd, eur) = setup_test();
+    let gbp = fake_asset(&e, &issuer);
+    let l = closed_loop(&e, &trader, &usd, &eur, &gbp);
+
+    let res = l.client.swap(
+        &TradeDirection::Buy,
+        &trader,
+        &usd,
+        &1000,
+        &640,
+        &l.path,
+        &None,
+    );
+    assert_eq!(res, (500, 640));
+    assert_eq!(balance(&e, &usd, &trader), 1000 - 500 + 640);
+    assert_eq!(balance(&e, &eur, &trader), 0);
+    assert_eq!(balance(&e, &gbp, &trader), 0);
+    assert_eq!(
+        token::Client::new(&e, &usd).allowance(&trader, &l.axis),
+        5000 - 500
+    );
+    assert_eq!(balance(&e, &usd, &l.makers[0]), 500);
+    assert_eq!(balance(&e, &eur, &l.makers[1]), 400);
+    assert_eq!(balance(&e, &gbp, &l.makers[2]), 320);
+    assert_eq!(l.client.order(&l.orders[0]).unwrap().amount, 1000 - 400);
+    assert_eq!(l.client.order(&l.orders[1]).unwrap().amount, 1000 - 320);
+    assert_eq!(l.client.order(&l.orders[2]).unwrap().amount, 2000 - 640);
+    assert_no_custody(&e, &l.axis, &[&usd, &eur, &gbp]);
+}
+
+#[test]
+fn test_swap_closed_loop_kills_and_moves_nothing() {
+    // A route returning less than the minimum (`Sell`) or costing more than the maximum (`Buy`)
+    // fails `NotFilled`. The output never funds the input: the trader pays the first hop before
+    // the last one pays out, so 999 USD cannot start the route that would return 1280
+    let (e, trader, issuer, usd, eur) = setup_test();
+    let gbp = fake_asset(&e, &issuer);
+    let l = closed_loop(&e, &trader, &usd, &eur, &gbp);
+    let [eur_maker, gbp_maker, usd_maker] = &l.makers;
+    let accounts = [&trader, eur_maker, gbp_maker, usd_maker, &l.axis];
+    let assets = [&usd, &eur, &gbp];
+    let swap = |direction: TradeDirection, selling_amount: i128, buying_amount: i128| {
+        code(l.client.try_swap(
+            &direction,
+            &trader,
+            &usd,
+            &selling_amount,
+            &buying_amount,
+            &l.path,
+            &None,
+        ))
+    };
+    let before = balances(&e, &accounts, &assets);
+    let untouched = || {
+        assert_eq!(balances(&e, &accounts, &assets), before);
+        assert_eq!(l.client.order(&l.orders[0]).unwrap().amount, 1000);
+        assert_eq!(l.client.order(&l.orders[1]).unwrap().amount, 1000);
+        assert_eq!(l.client.order(&l.orders[2]).unwrap().amount, 2000);
+    };
+
+    assert_eq!(swap(TradeDirection::Sell, 1000, 1281), Some(709));
+    untouched();
+    assert_eq!(swap(TradeDirection::Buy, 999, 1280), Some(709));
+    untouched();
+
+    let elsewhere = actor(&e);
+    token::Client::new(&e, &usd).transfer(&trader, &elsewhere, &1);
+    let before = balances(&e, &accounts, &assets);
+    // the token's own balance error (`BalanceError` of the Stellar Asset Contract)
+    assert_eq!(swap(TradeDirection::Sell, 1000, 1280), Some(10));
+    assert_eq!(balances(&e, &accounts, &assets), before);
+    assert_eq!(l.client.order(&l.orders[0]).unwrap().amount, 1000);
 }

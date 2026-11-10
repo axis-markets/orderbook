@@ -1,0 +1,26 @@
+[package]
+name = "test-token"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Generic SEP-41 token with an admin who can pause transfers and blacklist accounts, for the AXIS tests"
+
+# A workspace of its own: the AXIS crate builds and tests without it
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+soroban-sdk = "29.0.1"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
