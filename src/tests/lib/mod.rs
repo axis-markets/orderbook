@@ -16,6 +16,7 @@ mod mock_oracle;
 mod mock_token;
 mod pricing;
 mod remove;
+mod requote_context;
 mod resources;
 mod sell;
 pub mod setup;

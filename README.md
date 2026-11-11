@@ -215,6 +215,7 @@ Returns
 Panics
 
 - If the contract is frozen
+- If the oracle cannot be called from the current context (`AssetsNotVerifiedByOracle`)
 
 ---
 
@@ -238,6 +239,7 @@ Panics
 - If `selling` equals `buying` (`InvalidMatch`)
 - If the market does not exist and the amount is below the market listing fee (`InvalidAmount`)
 - If neither market asset is quoted by the oracle (`AssetsNotVerifiedByOracle`)
+- If the oracle cannot be called from the current context (`AssetsNotVerifiedByOracle`)
 - If the contract is frozen
 
 ---

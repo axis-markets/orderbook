@@ -4,6 +4,7 @@ use crate::events;
 use crate::pricing;
 use crate::reflector_beam::{Asset, FeeConfig, ReflectorBeamClient};
 use crate::ttl::{bump_market, bump_market_for_order, DEFAULT_LEDGER_TIME};
+use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{contracttype, token, Address, Env, Vec};
 
 /// Upper bound for the oracle price decimals accepted
@@ -225,10 +226,16 @@ fn load_order_market(e: &Env, x: &Address, y: &Address) -> Option<Market> {
 
 /// Check oracle listing and fetch token decimals for a market asset. An asset whose decimals
 /// together with the oracle decimals exceed `MAX_TOTAL_DECIMALS` cannot be valued and counts as
-/// unlisted, like an asset the oracle does not quote
+/// unlisted, like an asset the oracle does not quote. A call that fails without an answer from the
+/// oracle fails the check (`AssetsNotVerifiedByOracle`) instead of delisting the asset
 fn resolve_side(e: &Env, oracle: &ReflectorBeamClient, asset: Address) -> MarketSide {
-    //the oracle panics with AssetMissing for unknown assets
-    let mut listed = oracle.try_expires(&Asset::Stellar(asset.clone())).is_ok();
+    let mut listed = match oracle.try_expires(&Asset::Stellar(asset.clone())) {
+        Ok(_) => true,
+        //the oracle's own answer: it panics with AssetMissing for unknown assets
+        Err(Ok(err)) if err.is_type(ScErrorType::Contract) => false,
+        //the host refused the call (e.g. the oracle is already on the call stack, which a nested `requote` could otherwise turn into a delisting)
+        _ => e.panic_with_error(OrderbookError::AssetsNotVerifiedByOracle),
+    };
     let mut decimals = 0;
     if listed {
         decimals = token::Client::new(e, &asset).decimals();

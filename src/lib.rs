@@ -589,6 +589,7 @@ impl Axis {
     /// # Panics
     ///
     /// If the contract is frozen
+    /// If the oracle cannot be called from the current context (`AssetsNotVerifiedByOracle`)
     pub fn requote(e: Env, selling: Address, buying: Address) -> Option<Market> {
         bump_contract(&e, USER_BUMP_DAYS);
         admin::require_not_frozen(&e);
@@ -616,6 +617,7 @@ impl Axis {
     /// If `selling` equals `buying` (`InvalidMatch`)
     /// If the market does not exist and the amount is below the market listing fee (`InvalidAmount`)
     /// If neither market asset is quoted by the oracle (`AssetsNotVerifiedByOracle`)
+    /// If the oracle cannot be called from the current context (`AssetsNotVerifiedByOracle`)
     /// If the contract is frozen
     pub fn subsidize(
         e: Env,
