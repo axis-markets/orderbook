@@ -14,7 +14,7 @@ work="$root/target/nodoc"
 rm -rf "$work"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
-cp "$root/Cargo.toml" "$root/Cargo.lock" "$work/"
+cp "$root/Cargo.toml" "$root/Cargo.lock" "$root/build.rs" "$work/"
 cp -r "$root/src" "$work/src"
 find "$work/src" -name '*.rs' -exec sed -i -E '/^[[:space:]]*\/\/[\/!]/d' {} +
 

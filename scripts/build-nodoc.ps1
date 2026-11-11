@@ -13,7 +13,7 @@ $work = Join-Path $root 'target\nodoc'
 if (Test-Path $work) { Remove-Item -Recurse -Force $work }
 New-Item -ItemType Directory -Force $work | Out-Null
 try {
-    Copy-Item "$root\Cargo.toml", "$root\Cargo.lock" $work
+    Copy-Item "$root\Cargo.toml", "$root\Cargo.lock", "$root\build.rs" $work
     Copy-Item -Recurse "$root\src" "$work\src"
 
     $utf8 = New-Object System.Text.UTF8Encoding $false
