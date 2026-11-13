@@ -26,11 +26,22 @@ struct MakerCapacity {
     budget: i128,
 }
 
+/// Dispatcher settlement mode that decides where the makers receive tokens from
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Settlement {
+    /// A maker whose asset cannot be collected is skipped, settlement through allowance (`trade`, `crossfill`)
+    Lenient,
+    /// Every admitted fill settles exactly, settlement through allowance (first `swap` hop)
+    Strict,
+    /// Strict, makers paid out of the contract's own balance (later `swap` hops)
+    StrictInternal,
+}
+
 pub(crate) struct Dispatcher {
     e: Env,
     /// Account that moves the tokens
     taker: Address,
-    /// Account paying the makers, unless `intermediate`
+    /// Account paying the makers, ignored in StrictInternal mode
     payer: Address,
     /// Asset the taker pays with
     pay_asset: Address,
@@ -38,11 +49,8 @@ pub(crate) struct Dispatcher {
     get_asset: Address,
     /// Account receiving the acquired asset
     receiver: Address,
-    /// Whether to `transfer` out of the contract's own balance (intermediate swap hops)
-    intermediate: bool,
-    /// Strict: every admitted fill settles exactly as planned or the call fails, otherwise a
-    /// maker whose asset cannot be collected is skipped
-    strict: bool,
+    /// Settlement mode
+    mode: Settlement,
     /// Pending fills grouped by the maker address
     makers: Map<Address, Vec<Fill>>,
     /// Settlement capacity per maker
@@ -52,7 +60,6 @@ pub(crate) struct Dispatcher {
 }
 
 impl Dispatcher {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         e: &Env,
         taker: Address,
@@ -60,8 +67,7 @@ impl Dispatcher {
         pay_asset: Address,
         get_asset: Address,
         receiver: Address,
-        intermediate: bool,
-        strict: bool,
+        mode: Settlement,
     ) -> Dispatcher {
         Dispatcher {
             e: e.clone(),
@@ -70,8 +76,7 @@ impl Dispatcher {
             pay_asset,
             get_asset,
             receiver,
-            intermediate,
-            strict,
+            mode,
             makers: Map::new(e),
             capacity: Map::new(e),
             skipped: Vec::new(e),
@@ -155,8 +160,9 @@ impl Dispatcher {
         let axis = e.current_contract_address();
         let get_token = token::Client::new(e, &self.get_asset);
         let pay_token = token::Client::new(e, &self.pay_asset);
+        let strict = self.mode != Settlement::Lenient;
         //a receiver-side problem is reported before any transfer
-        if !self.strict && !self.makers.is_empty() {
+        if !strict && !self.makers.is_empty() {
             order::require_can_receive(e, &self.get_asset, &self.receiver);
             //the makers' assets pass through the contract on their way to the receiver
             if !order::can_receive(e, &self.get_asset, &axis) {
@@ -174,20 +180,28 @@ impl Dispatcher {
                 maker_sends += fill.bought;
                 maker_gets += fill.sold;
             }
-            if self.strict {
-                //maker part
-                get_token.transfer_from(&axis, &maker, &axis, &maker_sends);
-                //taker part
-                match self.intermediate {
-                    false => pay_token.transfer_from(&axis, &self.payer, &maker, &maker_gets),
-                    true => pay_token.transfer(&axis, &maker, &maker_gets),
+            match self.mode {
+                Settlement::Lenient => {
+                    if !self.settle_final(&get_token, &pay_token, &maker, maker_sends, maker_gets) {
+                        //the maker could not settle trade, its orders stay untouched
+                        for fill in fills.iter() {
+                            skipped.push_back(fill.order.id);
+                        }
+                        continue;
+                    }
                 }
-            } else if !self.settle_final(&get_token, &pay_token, &maker, maker_sends, maker_gets) {
-                //the maker could not settle, its orders stay untouched
-                for fill in fills.iter() {
-                    skipped.push_back(fill.order.id);
+                Settlement::Strict => {
+                    //maker part
+                    get_token.transfer_from(&axis, &maker, &axis, &maker_sends);
+                    //taker part
+                    pay_token.transfer_from(&axis, &self.payer, &maker, &maker_gets);
                 }
-                continue;
+                Settlement::StrictInternal => {
+                    //maker part
+                    get_token.transfer_from(&axis, &maker, &axis, &maker_sends);
+                    //the contract pays out of what the previous hop delivered
+                    pay_token.transfer(&axis, &maker, &maker_gets);
+                }
             }
             //record the fills
             for fill in fills.iter() {
@@ -215,7 +229,7 @@ impl Dispatcher {
         }
         //forward what the makers delivered in one transfer
         if self.receiver != axis && total_bought > 0 {
-            if self.strict {
+            if strict {
                 get_token.transfer(&axis, &self.receiver, &total_bought);
             } else {
                 match get_token.try_transfer(&axis, &self.receiver, &total_bought) {

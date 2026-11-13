@@ -1,7 +1,7 @@
 //! Fixed-point arithmetic with the 256-bit fallback.
 use crate::math::{
-    invert_price_ceil, invert_price_floor, is_dust, mul_div_ceil, mul_div_floor, MAX_PRICE,
-    MIN_PRICE, PRECISION,
+    invert_price_ceil, invert_price_floor, is_dust, mul_div_ceil, mul_div_floor, try_mul_div_floor,
+    MAX_PRICE, MIN_PRICE, PRECISION,
 };
 use soroban_sdk::Env;
 
@@ -38,6 +38,25 @@ fn test_mul_div_wide_fallback() {
 fn test_mul_div_overflowing_result() {
     let e = Env::default();
     mul_div_floor(&e, BIG, BIG, 1);
+}
+
+#[test]
+fn test_try_mul_div_floor_answers_none_beyond_i128() {
+    let e = Env::default();
+    assert_eq!(try_mul_div_floor(&e, 7, 1, 2), Some(3));
+    assert_eq!(try_mul_div_floor(&e, 0, 5, 3), Some(0));
+    assert_eq!(try_mul_div_floor(&e, BIG, BIG, BIG), Some(BIG));
+    // the largest quotient that fits, and the first that does not
+    assert_eq!(try_mul_div_floor(&e, i128::MAX, 2, 2), Some(i128::MAX));
+    assert_eq!(try_mul_div_floor(&e, i128::MAX, 2, 1), None);
+    assert_eq!(try_mul_div_floor(&e, BIG, BIG, 1), None);
+}
+
+#[test]
+#[should_panic(expected = "#740")]
+fn test_try_mul_div_floor_rejects_negative_operands() {
+    let e = Env::default();
+    try_mul_div_floor(&e, -1, 1, 1);
 }
 
 #[test]

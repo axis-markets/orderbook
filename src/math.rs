@@ -35,11 +35,17 @@ fn mul_div(e: &Env, a: i128, b: i128, d: i128) -> Option<(i128, bool)> {
     Some((quotient, remainder != 0))
 }
 
+/// `floor(a * b / d)` for non-negative operands, `None` when the result does not fit i128
+#[inline]
+pub(crate) fn try_mul_div_floor(e: &Env, a: i128, b: i128, d: i128) -> Option<i128> {
+    mul_div(e, a, b, d).map(|(quotient, _)| quotient)
+}
+
 /// `floor(a * b / d)` for non-negative operands
 #[inline]
 pub(crate) fn mul_div_floor(e: &Env, a: i128, b: i128, d: i128) -> i128 {
-    match mul_div(e, a, b, d) {
-        Some((quotient, _)) => quotient,
+    match try_mul_div_floor(e, a, b, d) {
+        Some(quotient) => quotient,
         None => e.panic_with_error(OrderbookError::Overflow),
     }
 }

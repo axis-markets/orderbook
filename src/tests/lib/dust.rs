@@ -4,14 +4,14 @@
 //! at the highest price it filled at as executed, and the trader keeps it; a real liquidity
 //! shortage still fails, however loose the limit.
 use super::setup::{
-    actor, assert_no_custody, balance, code, fake_asset, fund, no_orders, register_axis,
-    setup_test, store_order, trade, try_trade,
+    actor, assert_no_custody, balance, code, fake_asset, fake_asset_revocable, fund, list_asset,
+    no_orders, register_axis, setup_test, store_order, trade, try_trade, UNIT_PRICE,
 };
-use crate::math::MIN_PRICE;
+use crate::math::{MAX_PRICE, MIN_PRICE};
 use crate::order::{OrderKind, TradeDirection};
 use crate::trade::TradeStep;
 use crate::{orderbook::PRECISION, AxisClient};
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{token::StellarAssetClient, Address, Env, Vec};
 
 /// 1.5 USD per EUR
 const ONE_AND_HALF: i128 = 15 * PRECISION / 10;
@@ -281,4 +281,102 @@ fn test_swap_sell_still_fails_on_missing_liquidity() {
         Some(709)
     );
     assert_eq!(balance(&e, &usd, &trader), 10_000_000);
+}
+
+#[test]
+fn test_fill_or_kill_with_a_leftover_too_large_to_convert_is_not_filled() {
+    // The whole order costs 1 USD at the lowest price. What the taker has left is converted at
+    // that price to tell whether it still buys a unit: 10^24 USD would buy more than i128
+    // holds, which is missing liquidity like any other shortage, not an `Overflow` (740)
+    let (e, _, _, usd, eur) = setup_test();
+    let (client, _, _, taker, id) = eur_seller(&e, &usd, &eur, 10i128.pow(16), MIN_PRICE);
+
+    for selling in [10i128.pow(20), 10i128.pow(24)] {
+        assert_eq!(
+            try_trade(
+                &client,
+                TradeDirection::Sell,
+                OrderKind::FillOrKill,
+                &taker,
+                selling,
+                &usd,
+                &eur,
+                MAX_PRICE,
+                &Vec::from_array(&e, [id]),
+            ),
+            Some(709)
+        );
+    }
+    assert_eq!(client.order(&id).unwrap().amount, 10i128.pow(16));
+}
+
+#[test]
+fn test_swap_sell_with_a_leftover_too_large_to_convert_is_not_filled() {
+    // the forward pass of a `Sell` swap converts the input a hop leaves over the same way
+    let (e, _, _, usd, eur) = setup_test();
+    let (client, _, _, trader, id) = eur_seller(&e, &usd, &eur, 10i128.pow(16), MIN_PRICE);
+
+    for selling in [10i128.pow(20), 10i128.pow(24)] {
+        assert_eq!(
+            code(client.try_swap(
+                &TradeDirection::Sell,
+                &trader,
+                &usd,
+                &selling,
+                &1,
+                &single_hop(&e, &eur, id),
+                &None,
+            )),
+            Some(709)
+        );
+    }
+    assert_eq!(client.order(&id).unwrap().amount, 10i128.pow(16));
+}
+
+#[test]
+fn test_fill_or_kill_recheck_with_a_leftover_too_large_to_convert_is_not_filled() {
+    // The planned fills cover the whole amount, so the trade passes the check before settlement.
+    // The maker who would take nearly all of it is then skipped at settlement, and what is left
+    // is converted at the price of the fill that did settle: too large to convert, it fails the
+    // recheck with `NotFilled` like any other shortage
+    let (e, taker, issuer, usd, _) = setup_test();
+    let eur = fake_asset_revocable(&e, &issuer);
+    list_asset(&e, &eur, UNIT_PRICE);
+    let axis = register_axis(&e);
+    let client = AxisClient::new(&e, &axis);
+    let (cheap_maker, large_maker) = (actor(&e), actor(&e));
+    fund(&e, &eur, &axis, &cheap_maker, 10i128.pow(16));
+    fund(&e, &eur, &axis, &large_maker, 10i128.pow(18));
+    fund(&e, &usd, &axis, &taker, 10_000);
+    // 10^16 EUR for 1 USD, and 10^18 EUR for 10^24 USD
+    let cheap = store_order(&client, &cheap_maker, 10i128.pow(16), &eur, &usd, MIN_PRICE);
+    let large = store_order(
+        &client,
+        &large_maker,
+        10i128.pow(18),
+        &eur,
+        &usd,
+        10i128.pow(24),
+    );
+    // the balance and the allowance still read fine, but the transfer is refused
+    StellarAssetClient::new(&e, &eur).set_authorized(&large_maker, &false);
+
+    assert_eq!(
+        try_trade(
+            &client,
+            TradeDirection::Sell,
+            OrderKind::FillOrKill,
+            &taker,
+            10i128.pow(24) + 1,
+            &usd,
+            &eur,
+            MIN_PRICE,
+            &Vec::from_array(&e, [cheap, large]),
+        ),
+        Some(709)
+    );
+    assert_eq!(client.order(&cheap).unwrap().amount, 10i128.pow(16));
+    assert_eq!(client.order(&large).unwrap().amount, 10i128.pow(18));
+    assert_eq!(balance(&e, &usd, &taker), 10_000);
+    assert_no_custody(&e, &axis, &[&usd, &eur]);
 }

@@ -13,11 +13,11 @@ mod tests;
 mod trade;
 mod ttl;
 
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::{Dispatcher, Settlement};
 use crate::errors::OrderbookError;
 use crate::market::{Config, Market};
 use crate::math::{
-    check_price, invert_price_ceil, is_dust, mul_div_ceil, mul_div_floor, PRECISION,
+    check_price, invert_price_ceil, is_dust, mul_div_ceil, try_mul_div_floor, PRECISION,
 };
 use crate::trade::{Approval, OrderUpdate, TradeStep};
 use crate::ttl::{bump_contract, USER_BUMP_DAYS};
@@ -174,8 +174,7 @@ impl Axis {
             selling.clone(),
             buying.clone(),
             trader.clone(),
-            false,
-            false,
+            Settlement::Lenient,
         );
         //match the supplied orders
         if !orders.is_empty() {
@@ -197,11 +196,12 @@ impl Axis {
             TradeDirection::Buy => bought,
         };
         // sell asset leftover that cannot buy a single unit at the highest order price filled counts as executed and stays with the trader
+        // a leftover too large to convert buys far more than a unit, so it is not executed
         let executed = |sold: i128, bought: i128, worst_price: i128| match direction {
             TradeDirection::Sell => {
                 sold >= amount
                     || (worst_price > 0
-                        && mul_div_floor(&e, amount - sold, PRECISION, worst_price) == 0)
+                        && try_mul_div_floor(&e, amount - sold, PRECISION, worst_price) == Some(0))
             }
             TradeDirection::Buy => bought >= amount,
         };
@@ -470,8 +470,7 @@ impl Axis {
                 sell_asset(i),
                 step.asset.clone(),
                 axis.clone(),
-                true,
-                true,
+                Settlement::StrictInternal,
             );
             orderbook::match_orders(
                 &e,
@@ -494,7 +493,9 @@ impl Axis {
                 let mut input = selling_amount;
                 for i in 0..hops {
                     let (sold, bought, worst_price) = plan_hop(i, &TradeDirection::Sell, input);
-                    if bought == 0 || mul_div_floor(&e, input - sold, PRECISION, worst_price) > 0 {
+                    if bought == 0
+                        || try_mul_div_floor(&e, input - sold, PRECISION, worst_price) != Some(0)
+                    {
                         e.panic_with_error(OrderbookError::NotFilled);
                     }
                     input = bought;
@@ -542,8 +543,11 @@ impl Axis {
                 sell_asset(i),
                 step.asset.clone(),
                 if last { trader.clone() } else { axis.clone() },
-                !first,
-                true,
+                if first {
+                    Settlement::Strict
+                } else {
+                    Settlement::StrictInternal
+                },
             );
             orderbook::match_orders(
                 &e,

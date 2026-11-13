@@ -1,5 +1,5 @@
 //! Matching engine: fills a taker against a list of maker orders and crosses book orders.
-use crate::dispatcher::Dispatcher;
+use crate::dispatcher::{Dispatcher, Settlement};
 use crate::errors::OrderbookError;
 use crate::events;
 use crate::math::{invert_price_floor, is_dust, mul_div_ceil, mul_div_floor, try_mul_div_ceil};
@@ -166,8 +166,7 @@ pub(crate) fn cross_orders(
         selling.clone(),
         buying.clone(),
         axis.clone(),
-        false,
-        false,
+        Settlement::Lenient,
     );
     match_orders(
         e,

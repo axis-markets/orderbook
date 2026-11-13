@@ -8,10 +8,9 @@
 extern crate std;
 
 use super::setup::{
-    actor, code, fund, oracle_address, oracle_client, order_update, register_axis, setup_test,
+    actor, fund, oracle_address, oracle_client, order_update, register_axis, setup_test,
     store_order, trade, try_update_one,
 };
-use crate::math::MAX_PRICE;
 use crate::order::{OrderKind, TradeDirection};
 use crate::orderbook::PRECISION;
 use crate::reflector_beam::Asset;
@@ -198,35 +197,4 @@ fn test_requote_nested_in_another_call_checks_the_market() {
 
     let market = client.market(&usd, &eur).unwrap();
     assert!(market.base.listed && market.quote.listed);
-}
-
-#[test]
-fn test_unfilled_fill_or_kill_reports_overflow_for_a_huge_leftover() {
-    //the leftover check converts what is left at the highest order price filled; a result
-    //beyond i128 fails with `Overflow` (740) where the trade is simply not filled (709)
-    let (e, trader, _issuer, usd, eur) = setup_test();
-    let axis = register_axis(&e);
-    let client = AxisClient::new(&e, &axis);
-    let maker = actor(&e);
-    let amount = 10i128.pow(16);
-    fund(&e, &usd, &axis, &maker, amount);
-    //lowest price: the whole order costs one unit of EUR
-    let order = store_order(&client, &maker, amount, &usd, &eur, 100);
-    let fill_or_kill = |selling: i128| {
-        code(client.try_trade(
-            &TradeDirection::Sell,
-            &OrderKind::FillOrKill,
-            &trader,
-            &selling,
-            &eur,
-            &usd,
-            &MAX_PRICE,
-            &Vec::from_array(&e, [order]),
-            &1,
-            &0,
-            &None,
-        ))
-    };
-    assert_eq!(fill_or_kill(10i128.pow(20)), Some(709));
-    assert_eq!(fill_or_kill(10i128.pow(24)), Some(740));
 }

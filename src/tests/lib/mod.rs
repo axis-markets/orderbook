@@ -3,6 +3,7 @@ mod admin;
 mod allowance;
 mod auth;
 mod buy;
+mod classic;
 mod crossfill;
 mod custom_token;
 mod dust;
