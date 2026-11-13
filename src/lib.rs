@@ -215,7 +215,7 @@ impl Axis {
         //settle all fills
         let (sold, bought, worst_price) = dispatcher.settle();
         let filled = filled_of(sold, bought);
-        //a maker skipped at settlement triggers NotFilled
+        //recheck with what settled: a maker skipped at settlement can leave FillOrKill unexecuted
         if kind == OrderKind::FillOrKill && !executed(sold, bought, worst_price) {
             e.panic_with_error(OrderbookError::NotFilled);
         }

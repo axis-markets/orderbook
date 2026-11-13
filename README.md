@@ -347,7 +347,7 @@ the call fails with the token's own error, nothing moves and no maker is flagged
 retries. Telling the two apart would take a probe transfer that spends the payer's allowance, and in `crossfill` the
 payer is the order owner, who did not sign the call. A taker who cannot receive the bought asset fails the trade with
 `CannotReceive`. A token whose `transfer` or `transfer_from` answers with anything other than SEP-41's empty result
-fails the call as well - it's impossible to tell whether it moved the tokensd. Matching never removes, trims or caps an
+fails the call as well - it's impossible to tell whether it moved the tokens. Matching never removes, trims or caps an
 order. Routers should compute the effective depth per maker and asset as `min(balance, allowance)`
 shared across that maker's orders, treat the allowance's `live_until_ledger` as an expiry, check that the maker's line
 for the taker's asset has room for the payment, and use `skip` events to stop proposing orders of makers that fail to
