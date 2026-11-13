@@ -1,7 +1,7 @@
 # AXIS Orderbook Smart Contract: Consolidated Audit Report
 
-**Date:** 2026-11-13 
-**Contract:** `axis-markets-orderbook` v0.7.2 (Soroban, soroban-sdk 29.0.1)
+**Date:** 2026-11-13  
+**Contract:** `axis-markets-orderbook` v0.7.3 (Soroban, soroban-sdk 29.0.1)  
 **Code reviewed:** `master` at commit `37fd447`
 
 This is a consolidated report from findings provided by 3 tools: Apex by Cantina, Almanax.ai, and Claude Code (Fable).  
@@ -14,19 +14,20 @@ This is a consolidated report from findings provided by 3 tools: Apex by Cantina
 | `AX-` | Almanax | 3 |
 | `CC-`| Claude Code review | 2 |
 
-Each finding was checked against the code at сщььше `37fd447`.
+Each finding was checked against the code at commit `7e590a95cf539b750a60423248c493947b1bb011`.
 
 ## Summary
 
-None of the open items puts funds at risk. Two of the three Almanax findings are false positives. They rest on
-assumptions about the Soroban host and the build profile that do not hold.
+Every finding is fixed, acknowledged or invalid. Only informational notes remain open, and none of them puts funds at
+risk. Two of the three Almanax findings are false positives (they rest on assumptions about the Soroban host and the
+build profile that do not hold).
 
 | Status | Count | Findings |
 |-|-|-|
-| Fixed | 6 | ORDE-1, ORDE-9, ORDE-15, ORDE-19, ORDE-21, CC-1 |
+| Fixed | 8 | ORDE-1, ORDE-9, ORDE-15, ORDE-19, ORDE-21, CC-1, CC-2, AX-3 |
 | Acknowledged (by design, documented) | 11 | ORDE-2, ORDE-3, ORDE-4, ORDE-5, ORDE-6, ORDE-11, ORDE-12, ORDE-13, ORDE-17, ORDE-22, ORDE-24 |
 | Invalid (false positive) | 2 | AX-1, AX-2 |
-| Open | 2 + notes | CC-2 (Low), AX-3 (Informational); notes CC-N1 to CC-N3 |
+| Open | notes only | CC-N1 to CC-N3 (Informational) |
 
 ### All findings
 
@@ -38,8 +39,8 @@ assumptions about the Soroban host and the build profile that do not hold.
 | ORDE-21 | `Buy` `Limit` remainder double ceiling over-delivers             | Medium        | Low           | Fixed (bounded to 1%)     |
 | ORDE-9  | Crossfill `trade` event misattributes the caller                 | Medium        | Informational | Fixed (redesigned)        |
 | ORDE-19 | Swap hop `trade` events misattribute assets and taker            | Informational | Informational | Fixed (redesigned)        |
-| CC-2    | Unfilled `FillOrKill` reports `Overflow` instead of `NotFilled`  | Low           | Low           | **Open**                  |
-| AX-3    | `intermediate` flag ignored in lenient settlement                | n/a           | Informational | **Open** (latent)         |
+| CC-2    | Unfilled `FillOrKill` reports `Overflow` instead of `NotFilled`  | Low           | Low           | Fixed                     |
+| AX-3    | `intermediate` flag ignored in lenient settlement                | n/a           | Informational | Fixed (redesigned)        |
 | ORDE-3  | `Limit` admission trusts stale `listed` flags                    | Medium        | Low           | Acknowledged              |
 | ORDE-5  | `FillOrKill` succeeds after a lower-priced maker is skipped      | Medium        | Low           | Acknowledged              |
 | ORDE-6  | Stale signed `update` batch rewrites reused order ids            | Medium        | Low           | Acknowledged (documented) |
@@ -58,58 +59,18 @@ _("Reported" is the source's severity. "Assessed" is the severity after verifica
 
 ---
 
-## Open findings
-
-### CC-2: Unfilled `FillOrKill` reports `Overflow` instead of `NotFilled` (Low, open)
-
-**Location:** [src/lib.rs:204](src/lib.rs:204); the same expression is in the `swap` forward pass
-at [src/lib.rs:497](src/lib.rs:497).
-
-`FillOrKill` checks whether the unspent leftover could still buy one unit at the highest order price filled:
-`mul_div_floor(amount - sold, PRECISION, worst_price) == 0`. When that quotient does not fit in i128, `mul_div_floor`
-panics with `Overflow` (740) instead of `NotFilled` (709). For example, a leftover of 10^24 at price 100 does this.
-
-**Impact:** The call reverts either way, so nothing moves. Only the error code is wrong, and a client that re-quotes on
-709 handles the trade wrongly. `test_unfilled_fill_or_kill_reports_overflow_for_a_huge_leftover`
-([src/tests/lib/requote_context.rs:204](src/tests/lib/requote_context.rs:204)) records the current behavior.
-
-**Recommendation:** A quotient that does not fit i128 means the leftover can certainly buy a unit, so treat it as "not
-executed". The private `math::mul_div` already returns `None` in that case. Expose a `try_mul_div_floor` and use
-`try_mul_div_floor(..).is_some_and(|q| q == 0)` in both places.
-
-### AX-3: `intermediate` flag ignored in lenient settlement (Informational, open)
-
-**Claim:** In lenient mode, `settle_final` always pays makers with `transfer_from(payer → maker)` and never looks at
-`intermediate`. A dispatcher built with `intermediate = true, strict = false` would draw on the payer's allowance
-instead of the contract's balance.
-
-**Verification:** The description is accurate. `intermediate` is read only in the strict branch
-([src/dispatcher.rs:181-184](src/dispatcher.rs:181)), and `settle_final` always uses `transfer_from`
-([src/dispatcher.rs:258](src/dispatcher.rs:258)). No caller combines the two flags this way:
-
-| Call site                                                  | `intermediate` | `strict`             |
-|------------------------------------------------------------|----------------|----------------------|
-| `trade` ([src/lib.rs:170](src/lib.rs:170))                 | false          | false                |
-| `crossfill` ([src/orderbook.rs:162](src/orderbook.rs:162)) | false          | false                |
-| `swap` planning ([src/lib.rs:466](src/lib.rs:466))         | true           | true (never settled) |
-| `swap` execution ([src/lib.rs:538](src/lib.rs:538))        | `!first`       | true                 |
-
-**Impact:** None today. The latent case also needs a future caller to pass a user account as `payer`, because
-`transfer_from` spends only the payer's own allowance to the contract.
-
-**Recommendation:** Make the invalid combination unrepresentable. Replace the two booleans with one mode enum, such as
-`Lenient`, `Strict` and `StrictIntermediate`, or assert `!intermediate || strict` in `Dispatcher::new`.
+## Open notes
 
 ### Notes from the internal review (Informational, open)
 
 - **CC-N1, build reproducibility.** The deployed wasm is built by `scripts/build-nodoc.sh`, which strips doc comments,
   together with the `build.rs` stack flag. A plain `stellar contract build` gives a different hash, so verifying the
   deployed code against its source needs the script. Document the exact build command next to the deployed hash.
-- **CC-N2, fee-on-transfer tokens.** The forwarding transfer ([src/dispatcher.rs:217-228](src/dispatcher.rs:217)) sends
+- **CC-N2, fee-on-transfer tokens.** The forwarding transfer ([src/dispatcher.rs:230-241](src/dispatcher.rs:230)) sends
   `total_bought` from the contract and assumes the makers delivered that much. With a token that delivers less than it
   reports, the forward either fails the call or, if tokens are stranded in the contract (sent there by mistake), pays
-  out of them. Only such tokens are affected. This contradicts the threat model's statement that "no call pays out more
-  than it received".
+  out of them. Only such tokens are affected. The threat model's T9.R2 ("no call pays out more than it received") is now
+  limited to tokens that move exactly the amount requested.
 - **CC-N3, non-token addresses.** `subsidize` can open a market whose unlisted side is not a token contract, because
   decimals are read only for listed sides. Orders buying it can be stored but never fill. It costs the listing fee and
   only adds clutter.
@@ -128,14 +89,47 @@ against Testnet.
 
 **Fix:** `resolve_side` ([src/market.rs:231-238](src/market.rs:231)) now treats only the oracle's own contract error
 (`AssetMissing`) as "not listed". Any other failure fails the call with `AssetsNotVerifiedByOracle` (721), so nothing is
-written. Regression tests: [src/tests/lib/requote_context.rs:128](src/tests/lib/requote_context.rs:128)
-and [:178](src/tests/lib/requote_context.rs:178).
+written. Regression tests: [src/tests/lib/requote_context.rs:127](src/tests/lib/requote_context.rs:127)
+and [:177](src/tests/lib/requote_context.rs:177).
+
+### CC-2: Unfilled `FillOrKill` reports `Overflow` instead of `NotFilled` (Low, fixed)
+
+**Mechanism:** `FillOrKill` checks whether the unspent leftover could still buy one unit at the highest order price
+filled, and the forward pass of a `Sell` `swap` does the same for the input a hop leaves over. Both computed
+`mul_div_floor(leftover, PRECISION, worst_price)`, which panicked with `Overflow` (740) when the quotient did not fit in
+i128, for example with a leftover of 10^24 at price 100. The call reverted either way, so nothing moved, but a client
+that re-quotes on `NotFilled` (709) handled the trade wrongly.
+
+**Fix:** `math::try_mul_div_floor` ([src/math.rs:40](src/math.rs:40)) returns `None` for a quotient beyond i128. Such a
+leftover certainly buys a unit, so both checks now read it as not executed and fail with `NotFilled`:
+[src/lib.rs:204](src/lib.rs:204) and [src/lib.rs:496-497](src/lib.rs:496). Regression tests:
+[src/tests/lib/dust.rs:287](src/tests/lib/dust.rs:287), [:314](src/tests/lib/dust.rs:314) and, for the recheck after
+settlement, [:337](src/tests/lib/dust.rs:337).
+
+### AX-3: `intermediate` flag ignored in lenient settlement (Informational, fixed by redesign)
+
+**Claim:** In lenient mode, `settle_final` always paid makers with `transfer_from(payer → maker)` and never looked at
+`intermediate`. A dispatcher built with `intermediate = true, strict = false` would have drawn on the payer's allowance
+instead of the contract's balance.
+
+**Verification:** The description was accurate, but no caller combined the two flags that way, so nothing was affected.
+
+**Fix:** One `Settlement` mode ([src/dispatcher.rs:29-38](src/dispatcher.rs:29)) replaces the two booleans, so the
+combination can no longer be expressed:
+
+| Mode                 | A maker who cannot deliver | Makers are paid with                     | Call sites                                                                                                    |
+|----------------------|----------------------------|------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| `Lenient`            | is skipped                 | `transfer_from(payer → maker)`           | `trade` ([src/lib.rs:170](src/lib.rs:170)), `crossfill` ([src/orderbook.rs:162](src/orderbook.rs:162))        |
+| `Strict`             | fails the call             | `transfer_from(payer → maker)`           | first `swap` hop ([src/lib.rs:539](src/lib.rs:539))                                                           |
+| `StrictInternal`     | fails the call             | `transfer` out of the contract's balance | later `swap` hops ([src/lib.rs:539](src/lib.rs:539)), `swap` planning ([src/lib.rs:466](src/lib.rs:466), never settled) |
+
+Settlement behaves as before. The existing `trade`, `crossfill` and `swap` tests cover the three modes.
 
 ### ORDE-15: Lenient settlement accepts malformed token return values (fixed)
 
 A token whose `transfer_from` or `transfer` returns something other than SEP-41's unit result now fails the call:
-`Ok(result) => result.unwrap()` at [src/dispatcher.rs:251-256](src/dispatcher.rs:251)
-and [:221-226](src/dispatcher.rs:221).
+`Ok(result) => result.unwrap()` at [src/dispatcher.rs:265-270](src/dispatcher.rs:265)
+and [:235-240](src/dispatcher.rs:235).
 
 This differs from the recommendation, which was to skip the maker, and does so on purpose. A token that answers `true`
 after moving the tokens would otherwise leave the maker's asset stranded in the contract.
@@ -164,7 +158,7 @@ Test: [src/tests/lib/buy.rs:57](src/tests/lib/buy.rs:57).
 **What changed:** `taker` is now the account each fill is made for:
 
 - In `crossfill`, the caller on every maker fill.
-- In `swap`, the trader on every hop ([src/lib.rs:538-547](src/lib.rs:538)).
+- In `swap`, the trader on every hop ([src/lib.rs:539-551](src/lib.rs:539)).
 
 The contract never appears in an event. `crossfill` also reports the taker order's own fill, in the reverse direction,
 with the caller as taker and the owner as maker.
@@ -180,8 +174,8 @@ in `crossfill.rs`, `swap.rs`, `events.rs` and `custom_token.rs`. The axis-indexe
 
 ## Acknowledged findings (by design or out of scope)
 
-These were reviewed and ruled on after the October 2026 report. The code around them is unchanged at `37fd447`, so the
-rulings still apply.
+These were reviewed and ruled on after the October 2026 report. The code around them is unchanged at `37fd447`, and the CC-2 and
+AX-3 fixes do not alter them, so the rulings still apply.
 
 | ID              | Still present?                                                                                                                    | Why accepted                                                                                                                                                                                                                                                                                                                    |
 |-----------------|-----------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -192,8 +186,8 @@ rulings still apply.
 | ORDE-6, ORDE-11 | Yes, ids are `(owner, nonce)` and reusable after expiry or removal ([src/order.rs:59](src/order.rs:59), [:125](src/order.rs:125)) | Needs the owner to reuse a nonce while still holding an unsubmitted signed transaction. That is the Soroban authorization model and the client's choice of nonce. README "Order ids" discourages reuse; clients derive nonces from the clock plus random bits. ORDE-11 recreates exactly what the owner signed.                 |
 | ORDE-2          | Yes ([src/lib.rs:200-207](src/lib.rs:200))                                                                                        | Documented FoK leftover rule (README "Rounding"): the leftover cannot buy one unit at the highest price filled and is less than the amount sold. Tests in `dust.rs`.                                                                                                                                                            |
 | ORDE-5          | Yes: after a skip, the check uses the highest *settled* price ([src/lib.rs:219](src/lib.rs:219))                                  | Falls under the same documented FoK rule, so the bound above holds. Optional hardening: fail `FillOrKill` whenever an admitted fill is skipped at settlement.                                                                                                                                                                   |
-| ORDE-4          | Yes ([src/orderbook.rs:199-202](src/orderbook.rs:199), [src/dispatcher.rs:194-197](src/dispatcher.rs:194))                        | Documented dust rule (README "Rounding"). The removed remainder is worth less than one base unit of the counter asset at the order's own price, and the owner keeps the tokens. The narrowed price range rejects the PoC's price of 1, but the mechanism remains at, for example, price 100 with a remainder under 10^16 units. |
-| ORDE-17         | Yes, `Err(_) => return false` cannot tell maker-side from receiver-side failures ([src/dispatcher.rs:254](src/dispatcher.rs:254)) | SAC balances held by contract addresses have no trustline limit. Only custom tokens with per-holder caps are affected, and the result is a partial fill with a false `skip`, with no loss.                                                                                                                                      |
+| ORDE-4          | Yes ([src/orderbook.rs:198-201](src/orderbook.rs:198), [src/dispatcher.rs:208-211](src/dispatcher.rs:208))                        | Documented dust rule (README "Rounding"). The removed remainder is worth less than one base unit of the counter asset at the order's own price, and the owner keeps the tokens. The narrowed price range rejects the PoC's price of 1, but the mechanism remains at, for example, price 100 with a remainder under 10^16 units. |
+| ORDE-17         | Yes, `Err(_) => return false` cannot tell maker-side from receiver-side failures ([src/dispatcher.rs:269](src/dispatcher.rs:269)) | SAC balances held by contract addresses have no trustline limit. Only custom tokens with per-holder caps are affected, and the result is a partial fill with a false `skip`, with no loss.                                                                                                                                      |
 | ORDE-22         | Yes ([src/orderbook.rs:114-124](src/orderbook.rs:114))                                                                            | Needs amounts close to i128::MAX whose cost exceeds i128. The taker can retry with a smaller amount.                                                                                                                                                                                                                            |
 
 ---
